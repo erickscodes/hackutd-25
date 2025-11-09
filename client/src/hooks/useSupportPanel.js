@@ -1,10 +1,11 @@
+// src/hooks/useSupportPanel.js
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 
 const DEFAULT_FILTERS = {
   status: "all", // all | open | fixed
-  severity: "all", // all | minor | major | critical
+  severity: "all", // all | minor | major | critical | flagged
   q: "",
 };
 
@@ -249,17 +250,30 @@ export default function useSupportPanel(options = {}) {
     () => tickets.filter((t) => t.status === "fixed").length,
     [tickets]
   );
+  const flaggedCount = useMemo(
+    () => tickets.filter((t) => !!t.flagged).length,
+    [tickets]
+  );
 
   const filtered = useMemo(() => {
     const { status, severity, q } = filters;
     const qnorm = q.trim().toLowerCase();
     return tickets.filter((t) => {
+      // status filter
       if (status !== "all") {
         const isOpen = t.status !== "fixed";
         if (status === "open" && !isOpen) return false;
         if (status === "fixed" && isOpen) return false;
       }
-      if (severity !== "all" && t.severity !== severity) return false;
+
+      // severity / flagged filter
+      if (severity === "flagged") {
+        if (!t.flagged) return false;
+      } else if (severity !== "all" && t.severity !== severity) {
+        return false;
+      }
+
+      // text search
       if (qnorm) {
         const blob = `${t.title || ""} ${t.city || ""} ${
           t.lastMessageSnippet || ""
@@ -288,6 +302,7 @@ export default function useSupportPanel(options = {}) {
     currentMessages,
     openCount,
     fixedCount,
+    flaggedCount,
     filters,
     loading,
     loadingThread,

@@ -10,14 +10,23 @@ import {
   ChevronLeft,
   Wand2,
   X,
+  MessageSquare,
+  Loader2,
+  Filter,
+  AlertTriangle,
+  Check,
+  Activity,
+  MessageSquareWarning,
+  Info,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-/** T-Mobile theme */
+/** --- Theme (T‑Mobile inspired) --- */
 const T = {
   magenta: "#E20074",
   magentaLight: "#FF77C8",
   surface: "rgba(255,255,255,0.70)",
+  surface2: "rgba(255,255,255,0.88)",
   stroke: "rgba(255,255,255,0.35)",
   ink: "#0f172a",
 };
@@ -30,6 +39,7 @@ const useNowTicker = (ms = 30_000) => {
     return () => clearInterval(id);
   }, [ms]);
 };
+
 const timeAgo = (d) => {
   if (!d) return "—";
   const ms = Date.now() - new Date(d).getTime();
@@ -41,18 +51,99 @@ const timeAgo = (d) => {
   return `${h}h ${r}m ago`;
 };
 
-/* ---------- Small UI bits ---------- */
-function Pill({ children, active }) {
+const cn = (...xs) => xs.filter(Boolean).join(" ");
+
+/* ---------- Color helpers ---------- */
+const toneBySeverity = (sev = "minor") => {
+  switch (sev) {
+    case "critical":
+      return {
+        bg: "bg-rose-50",
+        fg: "text-rose-700",
+        ring: "ring-rose-300",
+        dot: "bg-rose-500",
+        chip: "bg-rose-100 text-rose-800",
+      };
+    case "major":
+      return {
+        bg: "bg-amber-50",
+        fg: "text-amber-700",
+        ring: "ring-amber-300",
+        dot: "bg-amber-500",
+        chip: "bg-amber-100 text-amber-800",
+      };
+    default:
+      return {
+        bg: "bg-emerald-50",
+        fg: "text-emerald-700",
+        ring: "ring-emerald-300",
+        dot: "bg-emerald-500",
+        chip: "bg-emerald-100 text-emerald-800",
+      };
+  }
+};
+
+const statusTone = (status = "open") =>
+  status === "fixed"
+    ? {
+        bg: "bg-emerald-600",
+        fg: "text-white",
+        chip: "bg-emerald-100 text-emerald-800",
+      }
+    : {
+        bg: "bg-slate-800",
+        fg: "text-white",
+        chip: "bg-slate-100 text-slate-800",
+      };
+
+/* ---------- Tiny UI bits ---------- */
+function Dot({ className }) {
   return (
     <span
-      className="px-2.5 py-1 rounded-full text-xs font-semibold border"
-      style={{
-        background: active ? "rgba(226,0,116,0.12)" : "rgba(255,255,255,0.7)",
-        color: active ? T.magenta : T.ink,
-        borderColor: T.stroke,
-      }}
+      aria-hidden
+      className={cn("inline-block h-2.5 w-2.5 rounded-full", className)}
+    />
+  );
+}
+
+function StatusBadge({ status }) {
+  const t = statusTone(status);
+  const Icon = status === "fixed" ? Check : Activity;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold",
+        t.fg,
+        t.bg
+      )}
     >
-      {children}
+      <Icon className="h-3.5 w-3.5" /> {status === "fixed" ? "Fixed" : "Open"}
+    </span>
+  );
+}
+
+function SeverityBadge({ severity = "minor" }) {
+  const t = toneBySeverity(severity);
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold",
+        t.chip
+      )}
+    >
+      <AlertTriangle className="h-3.5 w-3.5" /> {severity}
+    </span>
+  );
+}
+
+function CountChip({ icon: Icon, label }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-xl border text-[11px] px-2 py-1"
+      style={{ borderColor: T.stroke, background: "rgba(255,255,255,0.85)" }}
+    >
+      <Icon className="h-3.5 w-3.5 opacity-70" />
+      {label}
     </span>
   );
 }
@@ -61,43 +152,48 @@ function Pill({ children, active }) {
 function AnalysisModal({ open, onClose, summary }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 grid place-items-center p-4">
       <motion.div
         initial={{ opacity: 0, y: 12, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 12, scale: 0.98 }}
         transition={{ type: "spring", stiffness: 300, damping: 28 }}
         className="w-full max-w-xl rounded-2xl border shadow-2xl"
-        style={{ background: "rgba(255,255,255,0.9)", borderColor: T.stroke }}
+        style={{ background: "rgba(255,255,255,0.94)", borderColor: T.stroke }}
       >
         <div
-          className="flex items-center justify-between p-4 border-b"
+          className="flex items-center justify-between p-3 border-b"
           style={{ borderColor: T.stroke }}
         >
           <div
             className="inline-flex items-center gap-2 text-sm font-semibold"
             style={{ color: T.magenta }}
           >
-            <Wand2 className="h-4 w-4" />
-            AI Analysis
+            <Wand2 className="h-4 w-4" /> AI Analysis
           </div>
           <button
             onClick={onClose}
             className="rounded-lg p-1"
-            aria-label="Close"
+            aria-label="Close analysis dialog"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
         <div className="p-4 space-y-3 text-sm text-slate-800">
-          <div className="font-semibold text-base">{summary.title}</div>
+          <div
+            className="font-semibold text-base truncate"
+            title={summary.title}
+          >
+            {summary.title}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div
-              className="rounded-xl p-3 border"
-              style={{ borderColor: T.stroke, background: "white" }}
+              className="rounded-xl p-3 border bg-white"
+              style={{ borderColor: T.stroke }}
             >
-              <div className="text-[11px] text-slate-500">Ticket</div>
+              <div className="text-[11px] text-slate-500 mb-1">Ticket</div>
               <div>
                 Severity: <b>{summary.severity}</b>
               </div>
@@ -117,27 +213,30 @@ function AnalysisModal({ open, onClose, summary }) {
               </div>
             </div>
             <div
-              className="rounded-xl p-3 border"
-              style={{ borderColor: T.stroke, background: "white" }}
+              className="rounded-xl p-3 border bg-white"
+              style={{ borderColor: T.stroke }}
             >
-              <div className="text-[11px] text-slate-500">Conversation</div>
+              <div className="text-[11px] text-slate-500 mb-1">
+                Conversation
+              </div>
               <div>
                 Messages: <b>{summary.msgCount}</b>
               </div>
               <div>
-                User Messages: <b>{summary.userCount}</b>
+                User: <b>{summary.userCount}</b>
               </div>
               <div>
-                Staff Messages: <b>{summary.staffCount}</b>
+                Staff: <b>{summary.staffCount}</b>
               </div>
               <div>
-                Bot Messages: <b>{summary.botCount}</b>
+                Bot: <b>{summary.botCount}</b>
               </div>
             </div>
           </div>
+
           <div
-            className="rounded-xl p-3 border"
-            style={{ borderColor: T.stroke, background: "white" }}
+            className="rounded-xl p-3 border bg-white"
+            style={{ borderColor: T.stroke }}
           >
             <div className="text-[11px] text-slate-500 mb-1">Signals</div>
             <ul className="list-disc pl-5 space-y-1">
@@ -146,9 +245,10 @@ function AnalysisModal({ open, onClose, summary }) {
               ))}
             </ul>
           </div>
+
           <div
-            className="rounded-xl p-3 border"
-            style={{ borderColor: T.stroke, background: "white" }}
+            className="rounded-xl p-3 border bg-white"
+            style={{ borderColor: T.stroke }}
           >
             <div className="text-[11px] text-slate-500 mb-1">
               Suggested Next Action
@@ -177,11 +277,31 @@ function AnalysisModal({ open, onClose, summary }) {
   );
 }
 
-/* ---------- Ticket Row ---------- */
+/* ---------- Ticket Row (icon‑first, compact) ---------- */
 function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
   const isOpen = t.status !== "fixed";
   const flagged = !!t.flagged;
-  useNowTicker(30_000); // refresh "time ago"
+  useNowTicker(30_000);
+
+  const sevTone = toneBySeverity(t.severity);
+
+  // conditions: lag, volume, refund keyword → show small icons
+  const conditions = [];
+  if (
+    t.lastMessageAt &&
+    Date.now() - new Date(t.lastMessageAt) > 30 * 60 * 1000
+  ) {
+    conditions.push({ icon: Clock, title: "30+ min since last activity" });
+  }
+  if ((t.messageCount ?? 0) > 10) {
+    conditions.push({
+      icon: MessageSquareWarning,
+      title: "High message volume",
+    });
+  }
+  if ((t.lastMessageSnippet || "").toLowerCase().includes("refund")) {
+    conditions.push({ icon: Info, title: "Mentions refund" });
+  }
 
   return (
     <motion.button
@@ -189,8 +309,11 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
       layout
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 320, damping: 24 }}
-      className="w-full text-left relative rounded-2xl border p-3 mb-3"
+      transition={{ type: "spring", stiffness: 300, damping: 24 }}
+      className={cn(
+        "w-full text-left relative rounded-2xl border p-3 mb-2.5 transition",
+        "hover:brightness-[.99]"
+      )}
       style={{
         background: "rgba(255,255,255,0.95)",
         borderColor: active ? T.magenta : T.stroke,
@@ -198,53 +321,75 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
           ? "0 0 0 4px rgba(226,0,116,0.12)"
           : "0 6px 18px rgba(226,0,116,0.08)",
       }}
+      aria-pressed={active}
+      role="option"
+      aria-selected={!!active}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 pr-2">
-          <div className="font-semibold text-slate-800 truncate">
-            {t.title || "Untitled"}
+      <div className="flex items-center gap-3">
+        {/* left status disc */}
+        <div
+          className={cn(
+            "grid place-items-center h-10 w-10 rounded-full ring-2",
+            sevTone.ring
+          )}
+          style={{ background: "white" }}
+        >
+          <Dot className={cn("", sevTone.dot)} />
+        </div>
+
+        <div className="min-w-0 flex-1 pr-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div
+              className="font-semibold text-slate-800 truncate"
+              title={t.title || "Untitled"}
+            >
+              {t.title || "Untitled"}
+            </div>
+            <StatusBadge status={t.status} />
+            <SeverityBadge severity={t.severity || "minor"} />
           </div>
-          <div className="mt-1 text-xs text-slate-600 flex items-center gap-3">
+
+          <div className="mt-0.5 text-[11px] text-slate-600 flex items-center gap-3">
             {t.city && (
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1" title={t.city}>
                 <MapPin className="h-3 w-3" /> {t.city}
               </span>
             )}
             {t.lastMessageAt && (
-              <span className="inline-flex items-center gap-1">
+              <span
+                className="inline-flex items-center gap-1"
+                title={new Date(t.lastMessageAt).toLocaleString()}
+              >
                 <Clock className="h-3 w-3" />
-                {timeAgo(t.lastMessageAt)} {/* live relative time */}
+                {timeAgo(t.lastMessageAt)}
               </span>
             )}
+            {typeof t.messageCount === "number" && (
+              <span className="inline-flex items-center gap-1">
+                <MessageSquare className="h-3 w-3" /> {t.messageCount}
+              </span>
+            )}
+            {/* conditions */}
+            {conditions.map((c, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 text-amber-700"
+                title={c.title}
+              >
+                <c.icon className="h-3 w-3" />
+              </span>
+            ))}
           </div>
+
           {t.lastMessageSnippet && (
-            <div className="mt-1 text-xs text-slate-700 line-clamp-1">
+            <div className="mt-1 text-[12px] text-slate-700 line-clamp-1">
               {t.lastMessageSnippet}
             </div>
           )}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <Pill active={!isOpen}>{isOpen ? "Open" : "Fixed"}</Pill>
-          <Pill>{t.severity || "minor"}</Pill>
-          {typeof t.messageCount === "number" && (
-            <Pill>{t.messageCount} msg</Pill>
-          )}
-
-          {flagged && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onFlag?.(t);
-              }}
-              title="Flagged"
-              className="rounded-lg px-2 py-1.5 border inline-flex items-center justify-center text-white"
-              style={{ background: "#ef4444", borderColor: "rgba(0,0,0,0.05)" }}
-            >
-              <Flag className="h-4 w-4" />
-            </button>
-          )}
-
+        {/* Actions */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -257,10 +402,30 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
               background: analyzing ? "rgba(226,0,116,0.08)" : "white",
               color: analyzing ? T.magenta : "inherit",
             }}
+            aria-busy={analyzing}
             disabled={analyzing}
           >
-            <Wand2 className="h-4 w-4" />
+            {analyzing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Wand2 className="h-4 w-4" />
+            )}
             <span className="sr-only">Analyze</span>
+          </button>
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onFlag?.(t);
+            }}
+            title={flagged ? "Unflag" : "Flag"}
+            className={cn(
+              "rounded-lg p-1.5 border inline-flex items-center justify-center",
+              flagged ? "bg-rose-600 text-white border-transparent" : "bg-white"
+            )}
+            style={{ borderColor: flagged ? "transparent" : T.stroke }}
+          >
+            <Flag className="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -272,35 +437,40 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
 function Bubble({ role, author, text, ts }) {
   const isUser = role === "user";
   const isStaff = role === "staff";
-  useNowTicker(30_000); // live time in tooltip
+  useNowTicker(30_000);
 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 8, scale: 0.98 }}
+      initial={{ opacity: 0, y: 6, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ type: "spring", stiffness: 360, damping: 28 }}
-      className={`max-w-[85%] sm:max-w-[70%] md:max-w-[60%] rounded-2xl p-3 sm:p-4 border shadow-sm ${
+      transition={{ type: "spring", stiffness: 340, damping: 26 }}
+      className={cn(
+        "max-w-[85%] sm:max-w-[72%] md:max-w-[60%] rounded-2xl p-3 border shadow-sm",
         isUser ? "mr-auto bg-white" : "ml-auto"
-      }`}
+      )}
       style={{
         background: isStaff
           ? T.magenta
           : isUser
           ? "rgba(255,255,255,0.95)"
-          : "rgba(255,255,255,0.85)",
+          : "rgba(255,255,255,0.88)",
         color: isStaff ? "#fff" : T.ink,
         borderColor: isStaff ? "transparent" : T.stroke,
       }}
       title={new Date(ts).toLocaleString()}
+      role="group"
     >
-      <div className="text-[11px] opacity-75 mb-1">
-        <span className="font-semibold">
-          {author || (isUser ? "Customer" : "Bot")}
-        </span>{" "}
-        · {timeAgo(ts)}
+      <div className="text-[11px] opacity-70 mb-1 flex items-center gap-1">
+        <span className="font-semibold truncate max-w-[55%]">
+          {author || (isUser ? "Customer" : role === "bot" ? "Bot" : "Staff")}
+        </span>
+        <span className="opacity-60">·</span>
+        <span className="truncate">{timeAgo(ts)}</span>
       </div>
-      <div className="text-sm whitespace-pre-wrap leading-relaxed">{text}</div>
+      <div className="text-[13px] sm:text-sm whitespace-pre-wrap leading-relaxed">
+        {text}
+      </div>
     </motion.div>
   );
 }
@@ -325,7 +495,7 @@ export default function Support() {
     error,
   } = useSupportPanel({
     apiBase: "/api",
-    socketOrigin: "", // set "http://localhost:4000" when client ≠ server origin
+    socketOrigin: "",
     staffName: "Agent",
   });
 
@@ -333,7 +503,10 @@ export default function Support() {
   const [analyzingId, setAnalyzingId] = useState(null);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const [showFilters, setShowFilters] = useState(false);
+
   const listRef = useRef(null);
+  const atBottomRef = useRef(true);
 
   const onSend = async () => {
     const text = input.trim();
@@ -352,23 +525,35 @@ export default function Support() {
     else if (!r.ok) alert("Close failed");
   };
 
-  // auto-scroll thread bottom on new messages
+  // smart autoscroll
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+      atBottomRef.current = nearBottom;
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    if (atBottomRef.current)
+      requestAnimationFrame(() => (el.scrollTop = el.scrollHeight));
   }, [currentMessages.length, loadingThread]);
 
   const statusTabs = useMemo(
     () => [
-      { key: "all", label: `All (${tickets.length})` },
-      { key: "open", label: `Open (${openCount})` },
-      { key: "fixed", label: `Fixed (${fixedCount})` },
+      { key: "all", label: `All (${tickets.length})`, icon: Activity },
+      { key: "open", label: `Open (${openCount})`, icon: MessageSquare },
+      { key: "fixed", label: `Fixed (${fixedCount})`, icon: CheckCircle2 },
     ],
     [tickets.length, openCount, fixedCount]
   );
 
-  // ---- Analyze (client heuristic)
+  // ---- lightweight client analysis
   const analyzeTicket = async (ticket) => {
     try {
       setAnalyzingId(ticket._id);
@@ -394,8 +579,12 @@ export default function Support() {
         const rem = m % 60;
         return `${h}h ${rem}m`;
       };
-      const ageHuman = createdAt ? toHuman(now - createdAt) : "—";
-      const lastAtHuman = lastAt ? toHuman(now - lastAt) : "—";
+      const ageHuman = createdAt
+        ? toHuman(now.getTime() - createdAt.getTime())
+        : "—";
+      const lastAtHuman = lastAt
+        ? toHuman(now.getTime() - lastAt.getTime())
+        : "—";
 
       const severityScore =
         ticket.severity === "critical"
@@ -404,9 +593,9 @@ export default function Support() {
           ? 2
           : 1;
       const lagScore =
-        lastAt && now - lastAt > 30 * 60 * 1000
+        lastAt && now.getTime() - lastAt.getTime() > 30 * 60 * 1000
           ? 2
-          : lastAt && now - lastAt > 10 * 60 * 1000
+          : lastAt && now.getTime() - lastAt.getTime() > 10 * 60 * 1000
           ? 1
           : 0;
       const volumeScore = msgCount > 8 ? 2 : msgCount > 4 ? 1 : 0;
@@ -452,7 +641,6 @@ export default function Support() {
     }
   };
 
-  // ---- Flag toggle (optional API)
   const flagTicket = async (ticket) => {
     const id = ticket._id;
     try {
@@ -467,9 +655,24 @@ export default function Support() {
     }
   };
 
+  const headerChips = (
+    <div className="hidden sm:flex items-center gap-2">
+      <CountChip
+        icon={MessageSquare}
+        label={`${selectedTicket?.messageCount ?? 0} msgs`}
+      />
+      {selectedTicket?.severity && (
+        <CountChip icon={Flag} label={selectedTicket.severity} />
+      )}
+      {selectedTicket?.city && (
+        <CountChip icon={MapPin} label={selectedTicket.city} />
+      )}
+    </div>
+  );
+
   return (
     <div
-      className="min-h-screen"
+      className="h-dvh flex flex-col overflow-hidden"
       style={{
         background:
           "radial-gradient(1200px 700px at -10% -10%, rgba(226,0,116,0.08), transparent 50%), radial-gradient(1200px 700px at 110% 10%, rgba(255,119,200,0.08), transparent 50%), linear-gradient(to bottom right, #ffffff, #f8fafc)",
@@ -480,51 +683,64 @@ export default function Support() {
         className="sticky top-0 z-10 border-b backdrop-blur-xl"
         style={{ background: "rgba(255,255,255,0.75)", borderColor: T.stroke }}
       >
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 md:px-8 py-3 flex items-center justify-between">
+        <div className="mx-auto max-w-7xl px-3 sm:px-6 md:px-8 py-2.5 flex items-center justify-between gap-2">
           <a
             href="/"
             className="inline-flex items-center gap-2 text-sm font-medium"
             style={{ color: T.magenta }}
           >
-            <ChevronLeft className="h-4 w-4" />
-            Dashboard
+            <ChevronLeft className="h-4 w-4" /> Dashboard
           </a>
+          <button
+            onClick={() => setShowFilters((s) => !s)}
+            className="sm:hidden inline-flex items-center gap-1 text-xs px-2 py-1 rounded-xl border"
+            style={{
+              borderColor: T.stroke,
+              background: "rgba(255,255,255,0.9)",
+            }}
+            aria-expanded={showFilters}
+            aria-controls="filters"
+          >
+            <Filter className="h-3.5 w-3.5" /> Filters
+          </button>
+          {headerChips}
         </div>
       </header>
 
       {/* Body */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 md:px-8 py-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <main className="flex-1 min-h-0 overflow-hidden mx-auto max-w-7xl px-3 sm:px-6 md:px-8 py-4 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
         {/* Sidebar */}
         <section
-          className="rounded-2xl border p-3 lg:p-4"
+          className="rounded-2xl border p-3 sm:p-4 flex flex-col min-h-0"
           style={{
             background: T.surface,
             borderColor: T.stroke,
             boxShadow: "0 8px 26px rgba(226,0,116,0.15)",
           }}
         >
-          {/* Filters */}
-          <TicketFilters
-            tickets={tickets}
-            openCount={openCount}
-            fixedCount={fixedCount}
-            filters={filters}
-            setFilters={setFilters}
-          />
-
-          {/* List */}
-          <div className="mt-3 max-h-[calc(100dvh-280px)] overflow-y-auto pr-1">
-            {loading && (
-              <div className="text-sm text-slate-600">Loading tickets…</div>
+          <div
+            id="filters"
+            className={cn(
+              "sm:block",
+              showFilters ? "block" : "hidden sm:block"
             )}
+          >
+            <TicketFilters
+              tickets={tickets}
+              openCount={openCount}
+              fixedCount={fixedCount}
+              filters={filters}
+              setFilters={setFilters}
+              statusTabs={statusTabs}
+            />
+          </div>
+
+          <div className="mt-3 flex-1 min-h-0 overflow-y-auto pr-1">
+            {loading && <ListSkeleton />}
             {error && (
               <div className="text-sm text-rose-600">Error: {error}</div>
             )}
-            {!loading && filtered.length === 0 && (
-              <div className="text-sm text-slate-600">
-                No tickets match your filters.
-              </div>
-            )}
+            {!loading && filtered.length === 0 && <EmptyState />}
 
             <AnimatePresence initial={false}>
               {filtered.map((t) => (
@@ -550,20 +766,20 @@ export default function Support() {
 
         {/* Conversation */}
         <section
-          className="lg:col-span-2 rounded-2xl border p-3 sm:p-4 flex flex-col"
+          className="lg:col-span-2 rounded-2xl border p-3 sm:p-4 flex flex-col min-h-0"
           style={{
             background: T.surface,
             borderColor: T.stroke,
             boxShadow: "0 8px 26px rgba(226,0,116,0.15)",
           }}
         >
-          {/* Header */}
+          {/* Thread Header */}
           <div
             className="flex items-center justify-between gap-3 pb-2 border-b"
             style={{ borderColor: T.stroke }}
           >
             <div className="min-w-0">
-              <div className="text-sm text-slate-600">Ticket</div>
+              <div className="text-[11px] text-slate-600">Ticket</div>
               <motion.div
                 key={selectedTicket?._id || "none"}
                 layout
@@ -572,18 +788,21 @@ export default function Support() {
                 {selectedTicket?.title ||
                   (selectedId ? "Loading…" : "Select a ticket")}
               </motion.div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
+              <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
                 {selectedTicket?.city && (
-                  <span className="mr-3 inline-flex items-center gap-1">
+                  <span className="inline-flex items-center gap-1">
                     <MapPin className="h-3 w-3" /> {selectedTicket.city}
                   </span>
                 )}
                 {selectedTicket?.severity && (
                   <span>Severity: {selectedTicket.severity}</span>
                 )}
+                {typeof selectedTicket?.messageCount === "number" && (
+                  <span> · {selectedTicket.messageCount} messages</span>
+                )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {selectedTicket?.status !== "fixed" ? (
                 <motion.button
                   whileTap={{ scale: 0.97 }}
@@ -602,13 +821,28 @@ export default function Support() {
                   <CheckCircle2 className="h-4 w-4" /> Fixed
                 </span>
               )}
+              {selectedTicket && (
+                <motion.button
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => analyzeTicket(selectedTicket)}
+                  className="px-2.5 py-2 rounded-xl text-sm border inline-flex items-center gap-1"
+                  style={{
+                    borderColor: T.stroke,
+                    background: "rgba(255,255,255,0.95)",
+                  }}
+                  title="Analyze conversation"
+                >
+                  <Wand2 className="h-4 w-4" />{" "}
+                  <span className="hidden sm:inline">Analyze</span>
+                </motion.button>
+              )}
             </div>
           </div>
 
-          {/* Thread */}
+          {/* Thread (self‑scrolling) */}
           <div
             ref={listRef}
-            className="flex-1 overflow-y-auto py-3 space-y-3"
+            className="flex-1 min-h-0 overflow-y-auto py-3 space-y-2.5"
             style={{ scrollBehavior: "smooth" }}
           >
             {loadingThread && (
@@ -668,21 +902,17 @@ function TicketFilters({
   fixedCount,
   filters,
   setFilters,
+  statusTabs,
 }) {
-  const tabs = [
-    { key: "all", label: `All (${tickets.length})` },
-    { key: "open", label: `Open (${openCount})` },
-    { key: "fixed", label: `Fixed (${fixedCount})` },
-  ];
   return (
     <>
-      <div className="flex flex-wrap gap-2 items-center">
-        {tabs.map((tab) => (
+      <div className="flex flex-wrap gap-1.5 items-center">
+        {statusTabs.map((tab) => (
           <motion.button
             key={tab.key}
             onClick={() => setFilters((f) => ({ ...f, status: tab.key }))}
             whileTap={{ scale: 0.96 }}
-            className="text-xs px-2.5 py-1 rounded-full border transition"
+            className="text-[11px] px-2.5 py-1 rounded-full border transition inline-flex items-center gap-1"
             style={{
               background:
                 filters.status === tab.key
@@ -692,27 +922,29 @@ function TicketFilters({
               borderColor: T.stroke,
             }}
           >
-            {tab.label}
+            <tab.icon className="h-3.5 w-3.5" /> {tab.label}
           </motion.button>
         ))}
+
         <select
           value={filters.severity}
           onChange={(e) =>
             setFilters((f) => ({ ...f, severity: e.target.value }))
           }
-          className="ml-auto text-xs border rounded-xl h-8 px-2 bg-white/80"
+          className="ml-auto text-[11px] border rounded-xl h-8 px-2 bg-white/80"
           style={{ borderColor: T.stroke }}
-          title="Filter by severity"
+          title="Filter by severity or flagged"
         >
-          <option value="all">All severities</option>
-          <option value="minor">minor</option>
-          <option value="major">major</option>
-          <option value="critical">critical</option>
+          <option value="all">All tickets</option>
+          <option value="minor">Minor</option>
+          <option value="major">Major</option>
+          <option value="critical">Critical</option>
+          <option value="flagged">Flagged</option>
         </select>
       </div>
 
       <div
-        className="mt-3 flex items-center gap-2 border rounded-xl px-2 h-10 bg-white/85"
+        className="mt-2 flex items-center gap-2 border rounded-xl px-2 h-9 bg-white/85"
         style={{ borderColor: T.stroke }}
       >
         <Search className="h-4 w-4 text-slate-500" />
@@ -720,7 +952,8 @@ function TicketFilters({
           value={filters.q}
           onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
           placeholder="Search title, city, snippet…"
-          className="flex-1 bg-transparent outline-none text-sm"
+          className="flex-1 bg-transparent outline-none text-[13px]"
+          aria-label="Search tickets"
         />
       </div>
     </>
@@ -728,39 +961,43 @@ function TicketFilters({
 }
 
 function Composer({ disabled, input, setInput, onSend }) {
+  const [rows, setRows] = useState(1);
+  useEffect(() => {
+    const lines = input.split("\n").length;
+    setRows(Math.min(6, Math.max(1, lines)));
+  }, [input]);
+
   return (
     <>
+      <div className="pt-2 border-top" style={{ borderColor: T.stroke }} />
       <div className="pt-2 border-t" style={{ borderColor: T.stroke }}>
         <div
           className="flex items-end gap-2 rounded-2xl border p-2 sm:p-3 bg:white/85"
-          style={{
-            borderColor: T.stroke,
-            background: "rgba(255,255,255,0.85)",
-          }}
+          style={{ borderColor: T.stroke, background: "rgba(255,255,255,0.9)" }}
         >
           <textarea
-            rows={1}
+            rows={rows}
             disabled={disabled}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (
+                (e.key === "Enter" && !e.shiftKey) ||
+                (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+              ) {
                 e.preventDefault();
                 onSend();
               }
             }}
-            placeholder={
-              !disabled
-                ? "Type a reply… (Enter to send, Shift+Enter for newline)"
-                : "Select a ticket first"
-            }
-            className="flex-1 resize-none bg-transparent outline-none text-sm sm:text-base max-h-40 leading-6"
+            placeholder={!disabled ? "Type a reply…" : "Select a ticket first"}
+            className="flex-1 resize-none bg-transparent outline-none text-sm sm:text-[15px] max-h-40 leading-6"
+            aria-label="Message composer"
           />
           <motion.button
             whileTap={{ scale: 0.97 }}
             disabled={disabled || !input.trim()}
             onClick={onSend}
-            className="inline-flex items-center gap-2 rounded-xl text-white px-4 py-2 font-medium transition disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-xl text-white px-3 sm:px-4 py-2 font-medium transition disabled:opacity-50"
             style={{
               background: T.magenta,
               boxShadow: "0 8px 22px rgba(226,0,116,0.35)",
@@ -771,22 +1008,62 @@ function Composer({ disabled, input, setInput, onSend }) {
             <span className="hidden sm:inline">Send</span>
           </motion.button>
         </div>
-        <div className="mt-2 text-[11px] sm:text-xs text-slate-500">
-          Press{" "}
-          <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
-            Enter
-          </kbd>{" "}
-          to send,{" "}
-          <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
-            Shift
-          </kbd>
-          +
-          <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
-            Enter
-          </kbd>{" "}
-          for new line.
+        <div className="mt-1.5 text-[11px] sm:text-xs text-slate-500 flex items-center justify-between">
+          <div>
+            Press{" "}
+            <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
+              Enter
+            </kbd>{" "}
+            to send,{" "}
+            <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
+              Shift
+            </kbd>
+            +
+            <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
+              Enter
+            </kbd>{" "}
+            for new line.
+          </div>
+          <div className="opacity-70">{input.trim().length} chars</div>
         </div>
       </div>
     </>
+  );
+}
+
+/* ---------- Empty / Skeleton ---------- */
+function EmptyState() {
+  return (
+    <div className="text-sm text-slate-600 grid place-items-center py-10">
+      <div className="text-center max-w-xs">
+        <div className="mx-auto grid place-items-center h-12 w-12 rounded-full bg-slate-100 mb-3">
+          <Search className="h-5 w-5 text-slate-500" />
+        </div>
+        <div className="font-semibold">No tickets match your filters</div>
+        <div className="text-slate-500 mt-1">
+          Try changing status, severity, or the search query.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ListSkeleton() {
+  return (
+    <div className="space-y-2.5">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div
+          key={i}
+          className="h-[74px] rounded-2xl border overflow-hidden"
+          style={{ borderColor: T.stroke, background: "rgba(255,255,255,0.9)" }}
+        >
+          <div className="animate-pulse h-full">
+            <div className="h-5 w-2/3 bg-slate-200/70 mt-3 ml-3 rounded"></div>
+            <div className="h-3 w-1/3 bg-slate-200/60 mt-2 ml-3 rounded"></div>
+            <div className="h-3 w-5/6 bg-slate-200/50 mt-3 ml-3 rounded"></div>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
