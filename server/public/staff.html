@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Staff Console</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0b1225;
+        color: #e5e7eb;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 24px auto;
+        padding: 0 16px;
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        gap: 16px;
+      }
+      .card {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      h1 {
+        margin: 16px;
+      }
+      .list {
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+      .ticket {
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #1e293b;
+        margin-bottom: 8px;
+        cursor: pointer;
+      }
+      .ticket:hover {
+        background: #0a1222;
+      }
+      .pill {
+        font-size: 12px;
+        border: 1px solid #334155;
+        padding: 2px 6px;
+        border-radius: 999px;
+      }
+      .muted {
+        color: #9ca3af;
+        font-size: 12px;
+      }
+      .msgs {
+        height: 60vh;
+        overflow-y: auto;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        padding: 10px;
+        background: #09122a;
+      }
+      .msg {
+        margin: 8px 0;
+      }
+      .meta {
+        color: #9ca3af;
+        font-size: 12px;
+      }
+      .agent {
+        color: #4ade80;
+      }
+      .user {
+        color: #f472b6;
+      }
+      .bot {
+        color: #a78bfa;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      input,
+      button {
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #0a1122;
+        color: #e5e7eb;
+      }
+      button {
+        background: #2563eb;
+        border: none;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 style="text-align: center">🛠️ Staff Console</h1>
+    <div class="wrap">
+      <div class="card">
+        <h3>Open Tickets</h3>
+        <div id="ticketList" class="list"></div>
+      </div>
+
+      <div class="card">
+        <div>
+          <strong id="currentTicket">No ticket selected</strong>
+          <span class="pill" id="statusPill"></span>
+        </div>
+        <div id="msgs" class="msgs" style="margin-top: 8px"></div>
+        <div class="row">
+          <input
+            id="reply"
+            placeholder="Type reply as agent…"
+            style="flex: 1"
+          />
+          <button id="send">Send</button>
+          <button id="close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const ticketList = $("ticketList");
+      const msgs = $("msgs");
+      const statusPill = $("statusPill");
+      const currentTicketEl = $("currentTicket");
+      const replyInput = $("reply");
+
+      let socket = io();
+      socket.on("connect", () => socket.emit("join", { role: "staff" }));
+
+      let tickets = [];
+      let activeTicketId = null;
+
+      async function loadTickets() {
+        const res = await fetch("/api/tickets");
+        tickets = await res.json();
+        renderTickets();
+      }
+
+      function renderTickets() {
+        ticketList.innerHTML = "";
+        tickets.forEach((t) => {
+          const div = document.createElement("div");
+          div.className = "ticket";
+          div.onclick = () => selectTicket(t._id);
+          const snippet = escapeHtml(t.lastMessageSnippet || "");
+          const when = t.lastMessageAt
+            ? new Date(t.lastMessageAt).toLocaleTimeString()
+            : "";
+          div.innerHTML = `
+          <div><strong>${escapeHtml(t.title)}</strong></div>
+          <div class="muted">${escapeHtml(t.city)} • severity: ${
+            t.severity
+          } • msgs: ${t.messageCount || 0}</div>
+          <div class="muted">${snippet} ${when ? "• " + when : ""}</div>
+          <div><span class="pill">${t.status}</span></div>`;
+          ticketList.appendChild(div);
+        });
+      }
+
+      async function selectTicket(id) {
+        activeTicketId = id;
+        const t = tickets.find((x) => String(x._id) === String(id));
+        currentTicketEl.textContent = `Ticket: ${t?.title || id}`;
+        statusPill.textContent = `Status: ${t?.status || "open"}`;
+        msgs.innerHTML = "";
+
+        socket.emit("join", { ticketId: id });
+
+        const res = await fetch(`/api/tickets/${id}/chat`);
+        const data = await res.json();
+        (data.messages || []).forEach(addMsg);
+      }
+
+      function addMsg(m) {
+        const d = document.createElement("div");
+        const ts = new Date(m.createdAt).toLocaleTimeString();
+        d.className = `msg ${m.authorType}`;
+        d.innerHTML = `<div><strong>[${m.authorType}] ${escapeHtml(
+          m.authorName || ""
+        )}</strong> <span class="meta">${ts}</span></div><div>${escapeHtml(
+          m.text
+        )}</div>`;
+        msgs.appendChild(d);
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+
+      function escapeHtml(s) {
+        return (s || "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            }[c])
+        );
+      }
+
+      $("send").onclick = async () => {
+        if (!activeTicketId) return alert("Select a ticket first");
+        const text = replyInput.value.trim();
+        if (!text) return;
+        replyInput.value = "";
+        await fetch(`/api/tickets/${activeTicketId}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            authorType: "agent",
+            authorName: "Agent",
+            text,
+          }),
+        });
+      };
+
+      $("close").onclick = async () => {
+        if (!activeTicketId) return alert("Select a ticket first");
+        await fetch(`/api/tickets/${activeTicketId}/close`, {
+          method: "PATCH",
+        });
+        loadTickets();
+      };
+
+      // live updates
+      socket.on("chat:new", (m) => {
+        if (String(m.ticketId) === String(activeTicketId)) addMsg(m);
+        const t = tickets.find((x) => String(x._id) === String(m.ticketId));
+        if (t) {
+          t.messageCount = (t.messageCount || 0) + 1;
+          t.lastMessageSnippet = m.text.slice(0, 120);
+          t.lastMessageAt = new Date().toISOString();
+          renderTickets();
+        }
+      });
+
+      socket.on("ticket:meta", (p) => {
+        const t = tickets.find((x) => String(x._id) === String(p.id));
+        if (t) {
+          if (typeof p.messageCount === "number")
+            t.messageCount = p.messageCount;
+          if (p.lastMessageSnippet) t.lastMessageSnippet = p.lastMessageSnippet;
+          if (p.lastMessageAt) t.lastMessageAt = p.lastMessageAt;
+          renderTickets();
+        }
+      });
+
+      socket.on("ticket:created", (t) => {
+        tickets.unshift(t);
+        renderTickets();
+      });
+      socket.on("ticket:updated", (p) => {
+        const t = tickets.find((x) => String(x._id) === String(p.id));
+        if (t) {
+          t.status = p.status;
+          renderTickets();
+        }
+      });
+      socket.on("ticket:closed", (t) => {
+        const i = tickets.findIndex((x) => String(x._id) === String(t._id));
+        if (i >= 0) {
+          tickets[i] = t;
+          renderTickets();
+        }
+        if (String(t._id) === String(activeTicketId))
+          statusPill.textContent = "Status: fixed";
+      });
+
+      loadTickets();
+    </script>
+  </body>
+</html>

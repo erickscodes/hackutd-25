@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>T-Mobile Support Chat</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0f172a;
+        --card: #0b1225;
+        --muted: #9ca3af;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: var(--bg);
+        color: #e5e7eb;
+      }
+      .wrap {
+        max-width: 820px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      h1 {
+        font-size: 24px;
+        margin: 0 0 16px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid #1e293b;
+        border-radius: 14px;
+        padding: 16px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .row-1 {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }
+      label {
+        font-size: 12px;
+        color: var(--muted);
+        display: block;
+        margin-bottom: 6px;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        background: #0a1122;
+        color: #e5e7eb;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+      }
+      button {
+        appearance: none;
+        background: #475569;
+        color: white;
+        border: 0;
+        padding: 10px 14px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #2563eb;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .chat {
+        margin-top: 16px;
+      }
+      .msgs {
+        background: #09122a;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        padding: 12px;
+        height: 360px;
+        overflow-y: auto;
+      }
+      .msg {
+        margin: 8px 0;
+      }
+      .bot {
+        color: #a78bfa;
+      }
+      .agent {
+        color: #4ade80;
+      }
+      .user {
+        color: #f472b6;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .flex {
+        display: flex;
+        gap: 10px;
+        margin-top: 10px;
+      }
+      .grow {
+        flex: 1;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #0a1122;
+        border: 1px solid #1e293b;
+        color: #cbd5e1;
+        font-size: 12px;
+      }
+      .sep {
+        height: 1px;
+        background: #1e293b;
+        margin: 12px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>📲 T-Mobile Support Chat</h1>
+
+      <div class="card">
+        <div class="row-1">
+          <div style="flex: 1">
+            <label>Your name</label>
+            <input id="name" placeholder="e.g., Erick" />
+          </div>
+          <div style="width: 220px">
+            <label>City</label>
+            <input id="city" placeholder="e.g., Dallas" />
+          </div>
+          <div style="width: 220px">
+            <label>Severity (optional)</label>
+            <select id="severity">
+              <option value="minor" selected>minor</option>
+              <option value="major">major</option>
+              <option value="critical">critical</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Issue title</label>
+            <input id="title" placeholder="No signal near downtown" />
+          </div>
+          <div>
+            <label>Short description</label>
+            <input id="desc" placeholder="Can't make calls since last night" />
+          </div>
+        </div>
+
+        <div class="row-1">
+          <button id="start" class="primary">Start Chat</button>
+          <span id="ticketPill" class="pill" style="display: none"></span>
+          <span id="statusPill" class="pill" style="display: none"></span>
+        </div>
+        <div class="sep"></div>
+
+        <div class="chat">
+          <div class="msgs" id="msgs"></div>
+          <div class="flex">
+            <input
+              id="chatInput"
+              class="grow"
+              placeholder="Type a message…"
+              disabled
+            />
+            <button id="sendBtn" disabled>Send</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="meta" style="margin-top: 10px">
+        Staff subscribed to the <code>support</code> room see your messages in
+        real time.
+      </p>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const msgs = $("msgs");
+      const ticketPill = $("ticketPill");
+      const statusPill = $("statusPill");
+      const sendBtn = $("sendBtn");
+      const chatInput = $("chatInput");
+
+      let socket;
+      let ticketId = null;
+      let requesterName = null;
+
+      function addMsg({ authorType, authorName, text, createdAt }) {
+        const div = document.createElement("div");
+        const roleClass = authorType || "user";
+        const ts = createdAt
+          ? new Date(createdAt).toLocaleTimeString()
+          : new Date().toLocaleTimeString();
+        div.className = `msg ${roleClass}`;
+        div.innerHTML = `<div><strong>[${authorType}] ${
+          authorName || ""
+        }</strong> <span class="meta">${ts}</span></div><div>${escapeHtml(
+          text
+        )}</div>`;
+        msgs.appendChild(div);
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+      function escapeHtml(s) {
+        return (s || "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            }[c])
+        );
+      }
+
+      $("start").onclick = async () => {
+        requesterName = $("name").value.trim() || "Guest";
+        const city = $("city").value.trim() || "Unknown";
+        const title = $("title").value.trim() || "Issue";
+        const description = $("desc").value.trim() || "";
+        const severity = $("severity").value;
+
+        const res = await fetch("/api/tickets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requesterName,
+            city,
+            title,
+            description,
+            severity,
+          }),
+        });
+        const data = await res.json();
+        if (!data?.success) return alert("Failed to create ticket");
+
+        ticketId = data.ticket._id;
+        ticketPill.textContent = `Ticket: ${ticketId}`;
+        ticketPill.style.display = "inline-block";
+        statusPill.textContent = `Status: ${data.ticket.status}`;
+        statusPill.style.display = "inline-block";
+
+        socket = io();
+        socket.on("connect", () =>
+          socket.emit("join", { role: "user", ticketId })
+        );
+
+        socket.on("joined", (d) => {
+          console.log("✅ Joined room:", d.room);
+        });
+
+        socket.on("chat:new", (m) => {
+          // Always compare IDs as strings to avoid ObjectId mismatch
+          if (String(m.ticketId) === String(ticketId)) addMsg(m);
+        });
+
+        socket.on("ticket:updated", (p) => {
+          if (p?.id && String(p.id) === String(ticketId) && p.status) {
+            statusPill.textContent = `Status: ${p.status}`;
+          }
+        });
+        socket.on("ticket:closed", (t) => {
+          if (t?._id && String(t._id) === String(ticketId)) {
+            statusPill.textContent = "Status: fixed";
+          }
+        });
+
+        chatInput.disabled = false;
+        sendBtn.disabled = false;
+        addMsg({
+          authorType: "bot",
+          authorName: "AutoBot",
+          text: "Hi! A specialist will be with you shortly.",
+        });
+      };
+
+      async function sendChat() {
+        const text = chatInput.value.trim();
+        if (!text || !ticketId) return;
+        chatInput.value = "";
+        addMsg({ authorType: "user", authorName: requesterName, text }); // optimistic
+
+        const res = await fetch(`/api/tickets/${ticketId}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            authorType: "user",
+            authorName: requesterName,
+            text,
+          }),
+        });
+        if (!res.ok)
+          addMsg({
+            authorType: "bot",
+            authorName: "AutoBot",
+            text: "⚠️ Failed to send. Please retry.",
+          });
+      }
+
+      sendBtn.onclick = sendChat;
+      chatInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendChat();
+        }
+      });
+    </script>
+  </body>
+</html>
