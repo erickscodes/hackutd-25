@@ -3,8 +3,9 @@ import Chatbot from "./pages/Chatbot.jsx";
 
 function App() {
   return (
-    <div>
+    <div className="staff-app">
       <Dashboard />
+      <Chatbot />
     </div>
   );
 }
