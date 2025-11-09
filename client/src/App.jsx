@@ -1,14 +1,17 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import viteLogo from "/vite.svg";
+// import reactLogo from "./assets/react.svg";
+// import viteLogo from "/vite.svg";
 import "./App.css";
+import Dashboard from "./pages/Dashboard.jsx";
+import Chatbot from "./pages/Chatbot.jsx";
 
 function App() {
   const [count, setCount] = useState(0);
 
   return (
-    <div>
-      <span className="text-black underline text-4xl">hi</span>
+    <div className="App">
+      <Dashboard />
+      <Chatbot />
     </div>
   );
 }
