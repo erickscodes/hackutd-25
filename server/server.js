@@ -10,6 +10,7 @@ import Ticket from "./models/Ticket.js";
 import ChatMessage from "./models/ChatMessage.js";
 import metricsRouter from "./metrics.js";
 import solvedTicketsRouter from "./routes/solved-tickets.js";
+import simpleMetricsRouter from "./routes/simple-metrics.js";
 
 dotenv.config();
 
@@ -35,6 +36,7 @@ app.use(express.json());
 app.use(express.static("public"));
 app.use("/api", metricsRouter);
 app.use("/api", solvedTicketsRouter);
+app.use("/api", simpleMetricsRouter);
 
 // --- HTTP + Socket.IO ---
 const server = http.createServer(app);
@@ -794,6 +796,47 @@ app.patch("/api/tickets/:id/close", async (req, res) => {
   } catch (err) {
     console.error("Close ticket error:", err);
     return res.status(500).json({ success: false, message: "server_error" });
+  }
+});
+
+// /api/metrics/simple
+app.get("/api/metrics/simple", async (_req, res) => {
+  try {
+    const now = new Date();
+
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const startOfYesterday = new Date(startOfToday);
+    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+
+    const startOf24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const [todayCount, yesterdayCount, last24hCount] = await Promise.all([
+      Ticket.countDocuments({ createdAt: { $gte: startOfToday, $lt: now } }),
+      Ticket.countDocuments({
+        createdAt: { $gte: startOfYesterday, $lt: startOfToday },
+      }),
+      Ticket.countDocuments({ createdAt: { $gte: startOf24h, $lt: now } }),
+    ]);
+
+    // Optional: simple "pace" projection if you didn’t already compute it
+    const hoursElapsed =
+      (now.getTime() - startOfToday.getTime()) / (60 * 60 * 1000);
+    const projectedToday =
+      hoursElapsed > 0
+        ? Math.round((todayCount / hoursElapsed) * 24)
+        : todayCount;
+
+    res.json({
+      todayCount,
+      yesterdayCount,
+      last24hCount,
+      projectedToday,
+    });
+  } catch (e) {
+    console.error("metrics/simple error:", e);
+    res.status(500).json({ error: e.message });
   }
 });
 

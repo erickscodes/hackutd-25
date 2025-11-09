@@ -1,5 +1,4 @@
-import React, { useState, useMemo } from "react";
-import useLiveTickets from "../hooks/useLiveTickets";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -29,6 +28,7 @@ import {
   Bar,
   Legend,
 } from "recharts";
+import useLiveTickets from "../hooks/useLiveTickets";
 
 /** --- THEME (T-Mobile) --- */
 const TMOBILE = {
@@ -56,8 +56,7 @@ function formatClock(ts) {
 function KPI({ label, value, sub, icon }) {
   return (
     <Card
-      className="group flex flex-col justify-between rounded-2xl border backdrop-blur-xl transition-all
-                 hover:-translate-y-0.5"
+      className="group flex flex-col justify-between rounded-2xl border backdrop-blur-xl transition-all hover:-translate-y-0.5"
       style={{
         background: TMOBILE.surface,
         borderColor: TMOBILE.stroke,
@@ -193,13 +192,11 @@ function Alerts({
 }) {
   if (!series || series.length < 3) return null;
 
-  // Keep only last N minutes
   const now = Date.now();
   const cutoff = now - minutes * 60 * 1000;
   const recent = series.filter((p) => p.ts >= cutoff);
   if (recent.length < 3) return null;
 
-  // Split into early vs late slices (e.g., last 40% is "late")
   const splitIdx = Math.max(1, Math.floor(recent.length * (1 - lateWindowPct)));
   const early = recent.slice(0, splitIdx);
   const late = recent.slice(splitIdx);
@@ -207,7 +204,6 @@ function Alerts({
   const avg = (arr) =>
     arr.reduce((s, x) => s + Number(x.confirmed ?? 0), 0) /
     Math.max(1, arr.length);
-
   const earlyAvg = avg(early);
   const lateAvg = avg(late);
   const dropAbs = Math.round(earlyAvg - lateAvg);
@@ -241,8 +237,7 @@ function Alerts({
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>Sentiment Drop Detected</AlertTitle>
             <AlertDescription>
-              {`Avg HI fell by ${dropAbs} pts (${dropPct}%)
-               over the last ${minutes} min. Investigate common topics.`}
+              {`Avg HI fell by ${dropAbs} pts (${dropPct}%) over the last ${minutes} min. Investigate common topics.`}
             </AlertDescription>
           </Alert>
         ) : (
@@ -262,8 +257,6 @@ function Alerts({
             </AlertDescription>
           </Alert>
         )}
-
-        {/* Tiny diagnostic line; keep or remove */}
         <div className="mt-2 text-xs text-slate-600">
           Early avg: {Math.round(earlyAvg)} · Late avg: {Math.round(lateAvg)} ·
           Δ {dropAbs} ({dropPct}%)
@@ -329,7 +322,7 @@ function OpsCharts({ data }) {
   );
 }
 
-/** Business Insights */
+/** Business Insights with smart fallbacks */
 function BusinessInsights({
   todayCount,
   projectedToday,
@@ -337,13 +330,61 @@ function BusinessInsights({
   avg30d,
   deltaVs7d,
   hourlyToday,
+  yesterdayCount,
+  last24hCount,
 }) {
-  const deltaColor =
-    deltaVs7d == null
-      ? "text-slate-600"
-      : deltaVs7d >= 0
+  const have7 = Number.isFinite(avg7d);
+  const have30 = Number.isFinite(avg30d);
+
+  const paceVsYesterday =
+    yesterdayCount != null && todayCount != null
+      ? Math.round((todayCount / Math.max(1, yesterdayCount) - 1) * 100)
+      : null;
+
+  const cards = [
+    { label: "Today's Tickets", value: todayCount, sub: "Since 00:00" },
+    {
+      label: "Projected Today",
+      value: projectedToday,
+      sub: "Rate-based projection",
+    },
+    have7
+      ? { label: "7-Day Avg", value: avg7d, sub: "Per day" }
+      : {
+          label: "Yesterday",
+          value: yesterdayCount ?? "—",
+          sub: "Previous day",
+        },
+    have30
+      ? { label: "30-Day Avg", value: avg30d, sub: "Per day" }
+      : {
+          label: "Last 24 Hours",
+          value: last24hCount ?? "—",
+          sub: "Rolling window",
+        },
+  ];
+
+  const deltaColor = Number.isFinite(deltaVs7d)
+    ? deltaVs7d >= 0
       ? "text-emerald-600"
-      : "text-rose-600";
+      : "text-rose-600"
+    : paceVsYesterday == null
+    ? "text-slate-600"
+    : paceVsYesterday >= 0
+    ? "text-emerald-600"
+    : "text-rose-600";
+
+  const deltaLabel = Number.isFinite(deltaVs7d)
+    ? "vs 7-Day Avg"
+    : "Pace vs Yesterday";
+  const deltaValue = Number.isFinite(deltaVs7d)
+    ? `${deltaVs7d > 0 ? "+" : ""}${deltaVs7d}%`
+    : paceVsYesterday == null
+    ? "—"
+    : `${paceVsYesterday >= 0 ? "+" : ""}${paceVsYesterday}%`;
+  const deltaSub = Number.isFinite(deltaVs7d)
+    ? "Positive = busier"
+    : "Positive = ahead of yesterday";
 
   return (
     <Card
@@ -359,22 +400,18 @@ function BusinessInsights({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-5 gap-4">
-          <KPI label="Today's Tickets" value={todayCount} sub="Since 00:00" />
+          {cards.map((c) => (
+            <KPI
+              key={c.label}
+              label={c.label}
+              value={c.value ?? "—"}
+              sub={c.sub}
+            />
+          ))}
           <KPI
-            label="Projected Today"
-            value={projectedToday}
-            sub="Rate-based projection"
-          />
-          <KPI label="7-Day Avg" value={avg7d ?? "—"} sub="Per day" />
-          <KPI label="30-Day Avg" value={avg30d ?? "—"} sub="Per day" />
-          <KPI
-            label="vs 7-Day Avg"
-            value={
-              deltaVs7d == null
-                ? "—"
-                : `${deltaVs7d > 0 ? "+" : ""}${deltaVs7d}%`
-            }
-            sub="Positive = busier"
+            label={deltaLabel}
+            value={deltaValue}
+            sub={deltaSub}
             icon={<Signal />}
           />
         </div>
@@ -399,13 +436,19 @@ function BusinessInsights({
         </div>
 
         <div className={`text-xs ${deltaColor}`}>
-          {deltaVs7d == null
-            ? "Historical averages unavailable — add /api/metrics to your backend for 7d/30d."
-            : deltaVs7d === 0
-            ? "On pace with your 7-day average."
-            : deltaVs7d > 0
-            ? "Busier than usual versus the 7-day average."
-            : "Quieter than usual versus the 7-day average."}
+          {Number.isFinite(deltaVs7d)
+            ? deltaVs7d === 0
+              ? "On pace with your 7-day average."
+              : deltaVs7d > 0
+              ? "Busier than usual versus the 7-day average."
+              : "Quieter than usual versus the 7-day average."
+            : paceVsYesterday == null
+            ? "Historical averages unavailable — using yesterday/last 24h as a short-term baseline."
+            : paceVsYesterday === 0
+            ? "On pace with yesterday."
+            : paceVsYesterday > 0
+            ? "Ahead of yesterday's pace."
+            : "Behind yesterday's pace."}
         </div>
       </CardContent>
     </Card>
@@ -435,6 +478,38 @@ export default function DashboardDemo() {
   const [city, setCity] = useState("Dallas");
   const [severity, setSeverity] = useState("critical");
   const [closeId, setCloseId] = useState("");
+
+  // --- NEW: simple metrics as fallbacks (yesterday / last24h / projectedToday)
+  const [simple, setSimple] = useState({
+    yesterdayCount: null,
+    last24hCount: null,
+    projectedToday: null,
+  });
+
+  useEffect(() => {
+    let alive = true;
+    async function pull() {
+      try {
+        const r = await fetch("/api/metrics/simple");
+        if (r.ok) {
+          const m = await r.json();
+          if (alive) {
+            setSimple({
+              yesterdayCount: m.yesterdayCount ?? null,
+              last24hCount: m.last24hCount ?? null,
+              projectedToday: m.projectedToday ?? null,
+            });
+          }
+        }
+      } catch {}
+    }
+    pull();
+    const id = setInterval(pull, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
 
   return (
     <div
@@ -546,14 +621,16 @@ export default function DashboardDemo() {
         {/* Ops */}
         <OpsCharts data={opsSeries} />
 
-        {/* Business Insights */}
+        {/* Business Insights (with fallbacks) */}
         <BusinessInsights
           todayCount={todayCount}
-          projectedToday={projectedToday}
+          projectedToday={projectedToday ?? simple.projectedToday}
           avg7d={metrics.avg7d}
           avg30d={metrics.avg30d}
           deltaVs7d={deltaVs7d}
           hourlyToday={hourlyToday}
+          yesterdayCount={simple.yesterdayCount}
+          last24hCount={simple.last24hCount}
         />
 
         {/* Actions */}
@@ -690,10 +767,10 @@ export default function DashboardDemo() {
             </CardContent>
           </Card>
         </div>
+
         <SolvedIssues limit={12} />
       </main>
 
-      {/* Footer */}
       <footer className="mt-auto py-6 text-center text-xs text-slate-600">
         <span>
           Made with <span style={{ color: TMOBILE.magenta }}>♥</span> — T-Mobile
