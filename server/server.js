@@ -5,16 +5,23 @@ import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import mongoose from "mongoose";
 import OpenAI from "openai";
+import axios from "axios";
+
 import { connectDB } from "./db/connectToDB.js";
 import Ticket from "./models/Ticket.js";
 import ChatMessage from "./models/ChatMessage.js";
 import metricsRouter from "./metrics.js";
 import solvedTicketsRouter from "./routes/solved-tickets.js";
 import simpleMetricsRouter from "./routes/simple-metrics.js";
+import ihrRouter from "./routes/ihr.js";
 
 dotenv.config();
 
-// --- OpenAI (optional) ---
+// ---------------------------- Config ----------------------------
+const IHR_BASE = process.env.IHR_BASE || "https://www.ihr.live/ihr/api";
+const PORT = process.env.PORT || 4000;
+
+// OpenAI (optional)
 const openaiApiKey = process.env.OPENAI_API_KEY || process.env.OPEN_API_KEY;
 if (!openaiApiKey) {
   console.warn(
@@ -26,7 +33,7 @@ console.log(
   openai ? "OpenAI client initialized" : "OpenAI client not initialized"
 );
 
-// --- Express ---
+// ---------------------------- Express ----------------------------
 const app = express();
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
@@ -34,21 +41,79 @@ app.use((req, _res, next) => {
 });
 app.use(express.json());
 app.use(express.static("public"));
+
+// Mount routers
 app.use("/api", metricsRouter);
 app.use("/api", solvedTicketsRouter);
 app.use("/api", simpleMetricsRouter);
+app.use("/api", ihrRouter);
 
-// --- HTTP + Socket.IO ---
+// ---------------------------- IHR helpers & routes ----------------------------
+async function ihrSearchTMobileASNs() {
+  const queries = ["t-mobile", "tmobile", "sprint"];
+  const seen = new Set();
+  const out = [];
+  for (const q of queries) {
+    const { data } = await axios.get(`${IHR_BASE}/networks`, {
+      params: { name__icontains: q, country: "US" },
+      timeout: 10_000,
+    });
+    for (const row of data || []) {
+      const key = row.asn;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(row); // { asn, name, country, ... }
+      }
+    }
+  }
+  return out;
+}
+
+async function ihrNetworkDelayAlarms({ asn, sinceISO }) {
+  const { data } = await axios.get(`${IHR_BASE}/network_delay/alarms`, {
+    params: { asn, ts__gte: sinceISO },
+    timeout: 10_000,
+  });
+  return data || [];
+}
+
+// IHR: find candidate T-Mobile ASNs (US)
+app.get("/api/ihr/asns", async (_req, res) => {
+  try {
+    const asns = await ihrSearchTMobileASNs();
+    res.json({ ok: true, asns });
+  } catch (e) {
+    console.error("IHR /asns error:", e.message);
+    res.status(502).json({ ok: false, error: "ihr_asns_failed" });
+  }
+});
+
+// IHR: recent delay/outage alerts window (default 5m)
+app.get("/api/ihr/alerts", async (req, res) => {
+  try {
+    const { asn = "AS21928", minutes = 5 } = req.query;
+    const sinceISO = new Date(
+      Date.now() - Number(minutes) * 60_000
+    ).toISOString();
+    const alerts = await ihrNetworkDelayAlarms({ asn, sinceISO });
+    res.json({ ok: true, asn, sinceISO, alerts });
+  } catch (e) {
+    console.error("IHR /alerts error:", e.message);
+    res.status(502).json({ ok: false, error: "ihr_alerts_failed" });
+  }
+});
+
+// ---------------------------- HTTP + Socket.IO ----------------------------
 const server = http.createServer(app);
 const io = new SocketIOServer(server, { cors: { origin: "*" } });
 
-// --- In-memory metrics ---
+// ---------------------------- In-memory ----------------------------
 let happiness = 100;
 const activateAgentTickets = new Map(); // ticketId -> last agent activity ms
 
-// ---------- AI context helpers ----------
+// ---------------------------- AI helpers ----------------------------
 function estimateTokens(str = "") {
-  return Math.ceil((str || "").length / 4); // coarse estimate
+  return Math.ceil((str || "").length / 4);
 }
 
 async function fetchRecentMessages(ticketId, limit = 50) {
@@ -75,7 +140,6 @@ function buildMessagesForOpenAI({
   responseTokens = 500,
 }) {
   const headroom = modelMaxTokens - responseTokens;
-
   const messages = [{ role: "system", content: systemPrompt.trim() }];
 
   const ctxParts = [];
@@ -108,11 +172,24 @@ function buildMessagesForOpenAI({
   if (convo.length === 0) {
     convo.push({ role: "user", content: "User started a new ticket." });
   }
-
   return messages.concat(convo);
 }
 
-// ---------- Stats helpers ----------
+function sentimentScore(s) {
+  switch (String(s || "").toLowerCase()) {
+    case "happy":
+      return 5;
+    case "upset":
+      return -5;
+    case "confused":
+      return -2;
+    case "neutral":
+    default:
+      return 0;
+  }
+}
+
+// ---------------------------- Stats helpers ----------------------------
 async function computeStats() {
   const total = await Ticket.countDocuments();
   const open = await Ticket.countDocuments({ status: { $ne: "fixed" } });
@@ -128,7 +205,6 @@ async function computeStats() {
   const recentClosed = await Ticket.find({ status: "fixed" })
     .sort({ updatedAt: -1 })
     .limit(200);
-
   let avgResolutionMs = 0;
   if (recentClosed.length) {
     const totalMs = recentClosed.reduce(
@@ -171,7 +247,6 @@ async function computeAndEmitStats() {
   }
 }
 
-// ---------- Meta broadcast helpers ----------
 function emitTicketMeta(ticket) {
   io.emit("ticket:meta", {
     id: String(ticket._id),
@@ -180,7 +255,6 @@ function emitTicketMeta(ticket) {
     lastMessageAt: ticket.lastMessageAt,
     flagged: !!ticket.flagged,
     flaggedAt: ticket.flaggedAt || null,
-    // also broadcast AI fields for live dashboards
     aiSentiment: ticket.aiSentiment || "neutral",
     aiKeywords: Array.isArray(ticket.aiKeywords) ? ticket.aiKeywords : [],
     aiSummary: ticket.aiSummary || "",
@@ -195,7 +269,7 @@ async function updateTicketMetaAndEmit(ticket, latestText) {
   emitTicketMeta(ticket);
 }
 
-// ---------- Centralized message writer ----------
+// ---------------------------- Central message writer ----------------------------
 async function addMessage({
   ticketId,
   authorType = "user",
@@ -235,7 +309,7 @@ async function addMessage({
     activateAgentTickets.set(String(ticketId), Date.now());
   }
 
-  // AI trigger (user-only, quiet 5m after agent message)
+  // AI auto-reply (user-only, quiet 5m after agent message)
   if (triggerAI && openai && authorType === "user") {
     const last = activateAgentTickets.get(String(ticketId));
     const quiet = !last || Date.now() - last >= 5 * 60 * 1000;
@@ -271,10 +345,7 @@ Rules:
   }
 `.trim();
 
-          // 1) Load recent history
           const history = await fetchRecentMessages(ticketId, 50);
-
-          // 2) Compose OpenAI messages with trimmed history
           const oaMessages = buildMessagesForOpenAI({
             systemPrompt,
             ticket,
@@ -283,7 +354,6 @@ Rules:
             responseTokens: 500,
           });
 
-          // 3) Call OpenAI
           const aiResp = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: oaMessages,
@@ -313,7 +383,7 @@ Rules:
             : [];
           if (aiSentiment.toLowerCase() === "upset") flagged = true;
 
-          // 4) Send bot message (broadcasts via chat:new)
+          // Bot message
           await ChatMessage.create({
             ticketId: new mongoose.Types.ObjectId(String(ticketId)),
             authorType: "bot",
@@ -332,17 +402,15 @@ Rules:
           io.to(`ticket:${String(ticketId)}`).emit("chat:new", botPayload);
           io.to("support").emit("chat:new", botPayload);
 
-          // 5) Update ticket meta count/snippet + save AI fields
+          // Save AI fields
           ticket.lastMessageAt = new Date();
           ticket.lastMessageSnippet = botText.slice(0, 120);
           ticket.messageCount = (ticket.messageCount || 0) + 1;
 
-          // ✅ Save AI fields for "Last Solved Issues" + dashboards
           ticket.aiSummary = botText.slice(0, 400);
           ticket.aiSentiment = aiSentiment;
           ticket.aiKeywords = aiKeywords;
 
-          // Also keep analysis/flag used elsewhere
           ticket.sentiment = aiSentiment;
           ticket.keywords = aiKeywords;
           ticket.analyzedAt = new Date();
@@ -351,10 +419,8 @@ Rules:
             ticket.flagged = true;
             ticket.flaggedAt = new Date();
           }
-
           await ticket.save();
 
-          // 6) Real-time updates for dashboards (no refresh needed)
           emitTicketMeta(ticket);
           io.emit("ticket:updated", {
             id: String(ticket._id),
@@ -381,31 +447,15 @@ Rules:
       })();
     }
   }
-
   return payload;
 }
 
-// Helper for aiScore here (mirrors model static)
-function sentimentScore(s) {
-  switch (String(s || "").toLowerCase()) {
-    case "happy":
-      return 5;
-    case "upset":
-      return -5;
-    case "confused":
-      return -2;
-    case "neutral":
-    default:
-      return 0;
-  }
-}
-
-// ---------- AI: reanalyze history & update ticket (no bot reply) ----------
+// ---------------------------- Post-close reanalysis helper ----------------------------
 async function analyzeTicketHistory(
   ticketId,
   {
-    model = "gpt-4o-mini", // faster/cheap; change if you want
-    maxHistory = 200, // pull more lines for end-of-life analysis
+    model = "gpt-4o-mini",
+    maxHistory = 200,
     responseTokens = 400,
     modelMaxTokens = 12000,
   } = {}
@@ -434,9 +484,7 @@ Guidelines:
 - Be concise and professional.
 `.trim();
 
-  // Load extended history for a better final read
   const history = await fetchRecentMessages(ticketId, maxHistory);
-
   const oaMessages = buildMessagesForOpenAI({
     systemPrompt,
     ticket,
@@ -473,28 +521,11 @@ Guidelines:
     aiJson.flagged || aiSentiment.toLowerCase() === "upset"
   );
 
-  // ---------- REST: reanalyze ticket on demand ----------
-  app.post("/api/tickets/:id/reanalyze", async (req, res) => {
-    try {
-      const id = String(req.params.id || "").trim();
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res
-          .status(400)
-          .json({ success: false, message: "Invalid ticket id" });
-      }
-      const result = await analyzeTicketHistory(id);
-      return res.json({ success: true, ...result });
-    } catch (err) {
-      console.error("Reanalyze error:", err);
-      res.status(500).json({ success: false, error: err.message });
-    }
-  });
-
-  // Save onto ticket
+  // Save
   ticket.aiSummary = aiSummary;
   ticket.aiSentiment = aiSentiment;
   ticket.aiKeywords = aiKeywords;
-  ticket.sentiment = aiSentiment; // legacy fields you already use
+  ticket.sentiment = aiSentiment; // legacy
   ticket.keywords = aiKeywords;
   ticket.analyzedAt = new Date();
   if (flagged) {
@@ -503,7 +534,6 @@ Guidelines:
   }
   await ticket.save();
 
-  // Emit for live dashboards / panels
   emitTicketMeta(ticket);
   io.emit("ticket:updated", {
     id: String(ticket._id),
@@ -525,7 +555,9 @@ Guidelines:
   };
 }
 
-// ---------- REST: test ticket ----------
+// ---------------------------- REST: routes ----------------------------
+
+// Test ticket
 app.post("/api/test-ticket", async (req, res) => {
   try {
     const {
@@ -548,7 +580,7 @@ app.post("/api/test-ticket", async (req, res) => {
   }
 });
 
-// ---------- REST: create ticket (welcome + initial issue + AI) ----------
+// Create ticket (welcome + initial issue + AI)
 app.post("/api/tickets", async (req, res) => {
   try {
     const {
@@ -571,7 +603,6 @@ app.post("/api/tickets", async (req, res) => {
 
     activateAgentTickets.delete(String(ticket._id));
 
-    // 1) Welcome bot
     const welcomeText =
       "🤖 Chatbot will triage your issue and a specialist will join shortly.";
     await addMessage({
@@ -582,7 +613,6 @@ app.post("/api/tickets", async (req, res) => {
       triggerAI: false,
     });
 
-    // 2) User initial message (title/description/city) + trigger AI
     const initialUserText =
       `**Issue:** ${title}\n\n` +
       `**Details:** ${description || "(no description)"}\n\n` +
@@ -607,7 +637,7 @@ app.post("/api/tickets", async (req, res) => {
   }
 });
 
-// ---------- REST: append chat message ----------
+// Append chat message
 app.post("/api/tickets/:id/chat", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -647,7 +677,7 @@ app.post("/api/tickets/:id/chat", async (req, res) => {
   }
 });
 
-// ---------- REST: ticket message history ----------
+// Ticket message history
 app.get("/api/tickets/:id/messages", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -676,62 +706,7 @@ app.get("/api/tickets/:id/messages", async (req, res) => {
   }
 });
 
-// ---------- REST: close ticket (optionally reanalyze) ----------
-app.patch("/api/tickets/:id/close", async (req, res) => {
-  try {
-    const id = String(req.params.id || "").trim();
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res
-        .status(404)
-        .json({ success: false, message: "not found", reason: "bad_id" });
-    }
-
-    const ticket = await Ticket.findById(id);
-    if (!ticket) {
-      return res
-        .status(404)
-        .json({ success: false, message: "not found", reason: "missing" });
-    }
-
-    // Mark closed (idempotent)
-    if (ticket.status !== "fixed") {
-      ticket.status = "fixed";
-      ticket.closedAt = new Date();
-      await ticket.save();
-      io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
-      emitTicketMeta(ticket);
-      await computeAndEmitStats();
-    } else {
-      io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
-      await computeAndEmitStats();
-    }
-
-    // Optional toggle: run AI after closing
-    const shouldReanalyze =
-      req.body?.reanalyze === true || req.query?.reanalyze === "1" || true; // <-- set to `true` to ALWAYS reanalyze on close
-
-    let analysis = null;
-    if (shouldReanalyze) {
-      try {
-        analysis = await analyzeTicketHistory(id);
-      } catch (e) {
-        console.error("Analyze on close failed:", e?.message || e);
-      }
-    }
-
-    return res.json({
-      success: true,
-      _id: ticket._id,
-      reanalyzed: Boolean(analysis && analysis.success),
-      ...(analysis || {}),
-    });
-  } catch (err) {
-    console.error("Close ticket error:", err);
-    return res.status(500).json({ success: false, message: "server_error" });
-  }
-});
-
-// ---------- REST: toggle flag ----------
+// Toggle flag
 app.patch("/api/tickets/:id/flag", async (req, res) => {
   try {
     const id = String(req.params.id || "");
@@ -759,7 +734,7 @@ app.patch("/api/tickets/:id/flag", async (req, res) => {
   }
 });
 
-// ---------- REST: close ticket ----------
+// Close ticket (reanalyze on close)
 app.patch("/api/tickets/:id/close", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -776,71 +751,91 @@ app.patch("/api/tickets/:id/close", async (req, res) => {
         .json({ success: false, message: "not found", reason: "missing" });
     }
 
-    if (ticket.status === "fixed") {
+    // Idempotent status set
+    if (ticket.status !== "fixed") {
+      ticket.status = "fixed";
+      ticket.closedAt = new Date();
+      await ticket.save();
+      io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
+      emitTicketMeta(ticket);
+      await computeAndEmitStats();
+    } else {
       io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
       await computeAndEmitStats();
-      return res
-        .status(409)
-        .json({ success: true, already: true, _id: ticket._id });
     }
 
-    ticket.status = "fixed";
-    ticket.closedAt = new Date();
-    await ticket.save();
+    // Always reanalyze on close (change to false if you want it opt-in)
+    const shouldReanalyze =
+      req.body?.reanalyze === true || req.query?.reanalyze === "1" || true;
 
-    io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
-    emitTicketMeta(ticket);
-    await computeAndEmitStats();
+    let analysis = null;
+    if (shouldReanalyze) {
+      try {
+        analysis = await analyzeTicketHistory(id);
+      } catch (e) {
+        console.error("Analyze on close failed:", e?.message || e);
+      }
+    }
 
-    return res.json({ success: true, _id: ticket._id });
+    return res.json({
+      success: true,
+      _id: ticket._id,
+      reanalyzed: Boolean(analysis && analysis.success),
+      ...(analysis || {}),
+    });
   } catch (err) {
     console.error("Close ticket error:", err);
     return res.status(500).json({ success: false, message: "server_error" });
   }
 });
 
-// /api/metrics/simple
-app.get("/api/metrics/simple", async (_req, res) => {
+// Reanalyze on demand (for your Analyze button)
+app.post("/api/tickets/:id/reanalyze", async (req, res) => {
   try {
-    const now = new Date();
-
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-
-    const startOfYesterday = new Date(startOfToday);
-    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
-
-    const startOf24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    const [todayCount, yesterdayCount, last24hCount] = await Promise.all([
-      Ticket.countDocuments({ createdAt: { $gte: startOfToday, $lt: now } }),
-      Ticket.countDocuments({
-        createdAt: { $gte: startOfYesterday, $lt: startOfToday },
-      }),
-      Ticket.countDocuments({ createdAt: { $gte: startOf24h, $lt: now } }),
-    ]);
-
-    // Optional: simple "pace" projection if you didn’t already compute it
-    const hoursElapsed =
-      (now.getTime() - startOfToday.getTime()) / (60 * 60 * 1000);
-    const projectedToday =
-      hoursElapsed > 0
-        ? Math.round((todayCount / hoursElapsed) * 24)
-        : todayCount;
-
-    res.json({
-      todayCount,
-      yesterdayCount,
-      last24hCount,
-      projectedToday,
-    });
-  } catch (e) {
-    console.error("metrics/simple error:", e);
-    res.status(500).json({ error: e.message });
+    const id = String(req.params.id || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid ticket id" });
+    }
+    const result = await analyzeTicketHistory(id);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error("Reanalyze error:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ---------- List tickets ----------
+// Read saved analysis (handy for UI refresh)
+app.get("/api/tickets/:id/analysis", async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid ticket id" });
+    }
+    const t = await Ticket.findById(id);
+    if (!t)
+      return res
+        .status(404)
+        .json({ success: false, message: "Ticket not found" });
+
+    return res.json({
+      success: true,
+      aiSummary: t.aiSummary || "",
+      aiSentiment: t.aiSentiment || "neutral",
+      aiKeywords: Array.isArray(t.aiKeywords) ? t.aiKeywords : [],
+      flagged: !!t.flagged,
+      analyzedAt: t.analyzedAt || null,
+    });
+  } catch (e) {
+    console.error("analysis read error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// List tickets
 app.get("/api/tickets", async (_req, res) => {
   try {
     const tickets = await Ticket.find().sort({ createdAt: -1 });
@@ -854,7 +849,7 @@ app.get("/", (_req, res) => {
   res.send("Server is running ✅");
 });
 
-// ---------- Socket.IO connection ----------
+// ---------------------------- Socket.IO ----------------------------
 io.on("connection", async (socket) => {
   console.log(`🟢 Client connected: ${socket.id}`);
   socket.emit("happiness:update", { happiness });
@@ -875,7 +870,6 @@ io.on("connection", async (socket) => {
         socket.emit("joined", { room });
         console.log(`🧵 ${socket.id} joined room: ${room}`);
 
-        // backlog so client never misses AI reply
         const msgs = await ChatMessage.find({
           ticketId: new mongoose.Types.ObjectId(String(ticketId)),
         })
@@ -904,8 +898,7 @@ io.on("connection", async (socket) => {
   });
 });
 
-// ---------- Start server ----------
-const PORT = process.env.PORT || 4000;
+// ---------------------------- Start server ----------------------------
 try {
   await connectDB();
   mongoose.connection.on("connected", () => {

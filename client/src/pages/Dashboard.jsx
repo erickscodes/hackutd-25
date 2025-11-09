@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from "react";
+// src/pages/Dashboard.jsx
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Card,
   CardContent,
@@ -15,6 +16,7 @@ import {
   Frown,
   Signal,
   RefreshCw,
+  Globe2,
 } from "lucide-react";
 import {
   LineChart,
@@ -29,6 +31,7 @@ import {
   Legend,
 } from "recharts";
 import useLiveTickets from "../hooks/useLiveTickets";
+import useIHR from "../hooks/useIHR";
 
 /** --- THEME (T-Mobile) --- */
 const TMOBILE = {
@@ -53,7 +56,32 @@ function formatClock(ts) {
   });
 }
 
-function KPI({ label, value, sub, icon }) {
+function countryFlag(cc = "") {
+  // quick emoji flag from 2-letter cc
+  const s = (cc || "").toUpperCase();
+  if (!/^[A-Z]{2}$/.test(s)) return "🌐";
+  const codePoints = [...s].map((c) => 0x1f1e6 - 65 + c.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
+
+function KPI({ label, value, sub, icon, tone = "primary" }) {
+  const toneBg =
+    tone === "success"
+      ? "rgba(16,185,129,0.12)"
+      : tone === "warn"
+      ? "rgba(245,158,11,0.14)"
+      : tone === "danger"
+      ? "rgba(239,68,68,0.14)"
+      : "rgba(226,0,116,0.12)"; // primary
+  const toneColor =
+    tone === "success"
+      ? "#10B981"
+      : tone === "warn"
+      ? "#F59E0B"
+      : tone === "danger"
+      ? "#EF4444"
+      : TMOBILE.magenta;
+
   return (
     <Card
       className="group flex flex-col justify-between rounded-2xl border backdrop-blur-xl transition-all hover:-translate-y-0.5"
@@ -64,17 +92,20 @@ function KPI({ label, value, sub, icon }) {
       }}
     >
       <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-sm font-medium text-slate-800/90">
+        <CardTitle className="text-sm font-medium text-slate-800/90 flex items-center gap-2">
+          <span
+            className="inline-flex items-center justify-center h-6 w-6 rounded-full"
+            style={{ background: toneBg, color: toneColor }}
+          >
+            {icon}
+          </span>
           {label}
         </CardTitle>
-        <div className="opacity-80 group-hover:opacity-100 transition-opacity">
-          {icon}
-        </div>
       </CardHeader>
       <CardContent>
         <div
           className="text-3xl sm:text-4xl font-extrabold tracking-tight"
-          style={{ color: TMOBILE.magenta }}
+          style={{ color: toneColor }}
           aria-live="polite"
         >
           {value}
@@ -86,12 +117,32 @@ function KPI({ label, value, sub, icon }) {
 }
 
 /** --- CHARTS --- */
-function TrendChart({ data }) {
-  const formatted = (data || []).map((d) => ({
-    time: formatClock(d.ts),
-    Confirmed: d.confirmed,
-    Projected: d.projected ?? d.confirmed,
-  }));
+/** Combined chart: Happiness (left axis) + IHR Alerts/min (right axis) — NO Projected line */
+function TrendChart({ series, ihrAlertsPerMinute = [], ihrLastUpdated }) {
+  // Map alerts per minute to the happiness timestamps (minute buckets)
+  const alertsMap = new Map();
+  (ihrAlertsPerMinute || []).forEach((pt) => {
+    const t = typeof pt.ts === "number" ? pt.ts : Date.parse(pt.ts);
+    const minuteKey = Math.floor(t / 60_000) * 60_000;
+    alertsMap.set(minuteKey, Number(pt.count) || 0);
+  });
+
+  const formatted = (series || []).map((d) => {
+    const t = Number(d.ts);
+    const minuteKey = Math.floor(t / 60_000) * 60_000;
+    const alerts = alertsMap.get(minuteKey) || 0;
+    return {
+      time: formatClock(t),
+      Happiness: d.confirmed,
+      Alerts: alerts,
+    };
+  });
+
+  const updatedSub =
+    ihrLastUpdated != null
+      ? `IHR updated ${new Date(ihrLastUpdated).toLocaleTimeString()}`
+      : "IHR updated —";
+
   return (
     <Card
       className="rounded-2xl border backdrop-blur-xl transition-all"
@@ -103,8 +154,9 @@ function TrendChart({ data }) {
     >
       <CardHeader className="pb-2">
         <CardTitle className="text-slate-900">
-          Happiness Index — Real-time Trend
+          Network Health & Happiness Trend
         </CardTitle>
+        <div className="text-xs text-slate-600">{updatedSub}</div>
       </CardHeader>
       <CardContent>
         <div className="h-[300px] sm:h-[350px] md:h-[400px] w-full">
@@ -112,25 +164,47 @@ function TrendChart({ data }) {
             <LineChart data={formatted}>
               <CartesianGrid strokeDasharray="3 3" stroke={TMOBILE.grid} />
               <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
+              <YAxis
+                yAxisId="left"
+                domain={[0, 100]}
+                tick={{ fontSize: 12 }}
+                label={{
+                  value: "Happiness",
+                  angle: -90,
+                  position: "insideLeft",
+                }}
+              />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                allowDecimals={false}
+                tick={{ fontSize: 12 }}
+                label={{
+                  value: "IHR Alerts / min",
+                  angle: 90,
+                  position: "insideRight",
+                }}
+              />
               <Tooltip
                 contentStyle={{ borderRadius: 12, borderColor: TMOBILE.stroke }}
                 labelStyle={{ fontWeight: 600 }}
               />
               <Legend />
               <Line
+                yAxisId="left"
                 type="monotone"
-                dataKey="Confirmed"
+                dataKey="Happiness"
                 dot={false}
                 strokeWidth={3}
                 stroke={TMOBILE.magenta}
               />
-              <Line
-                type="monotone"
-                dataKey="Projected"
-                dot={false}
-                strokeWidth={3}
-                stroke={TMOBILE.magentaSoft}
+              <Bar
+                yAxisId="right"
+                dataKey="Alerts"
+                fill="#ef4444"
+                radius={[4, 4, 0, 0]}
+                opacity={0.5}
+                barSize={12}
               />
             </LineChart>
           </ResponsiveContainer>
@@ -183,7 +257,7 @@ function SeverityBar({ counts }) {
   );
 }
 
-function Alerts({
+function AlertsCard({
   series,
   minutes = 10,
   lateWindowPct = 0.4,
@@ -194,7 +268,7 @@ function Alerts({
 
   const now = Date.now();
   const cutoff = now - minutes * 60 * 1000;
-  const recent = series.filter((p) => p.ts >= cutoff);
+  const recent = series.filter((p) => Number(p.ts) >= cutoff);
   if (recent.length < 3) return null;
 
   const splitIdx = Math.max(1, Math.floor(recent.length * (1 - lateWindowPct)));
@@ -259,7 +333,8 @@ function Alerts({
         )}
         <div className="mt-2 text-xs text-slate-600">
           Early avg: {Math.round(earlyAvg)} · Late avg: {Math.round(lateAvg)} ·
-          Δ {dropAbs} ({dropPct}%)
+          Δ {dropAbs} ({dropPct}
+          %)
         </div>
       </CardContent>
     </Card>
@@ -322,139 +397,6 @@ function OpsCharts({ data }) {
   );
 }
 
-/** Business Insights with smart fallbacks */
-function BusinessInsights({
-  todayCount,
-  projectedToday,
-  avg7d,
-  avg30d,
-  deltaVs7d,
-  hourlyToday,
-  yesterdayCount,
-  last24hCount,
-}) {
-  const have7 = Number.isFinite(avg7d);
-  const have30 = Number.isFinite(avg30d);
-
-  const paceVsYesterday =
-    yesterdayCount != null && todayCount != null
-      ? Math.round((todayCount / Math.max(1, yesterdayCount) - 1) * 100)
-      : null;
-
-  const cards = [
-    { label: "Today's Tickets", value: todayCount, sub: "Since 00:00" },
-    {
-      label: "Projected Today",
-      value: projectedToday,
-      sub: "Rate-based projection",
-    },
-    have7
-      ? { label: "7-Day Avg", value: avg7d, sub: "Per day" }
-      : {
-          label: "Yesterday",
-          value: yesterdayCount ?? "—",
-          sub: "Previous day",
-        },
-    have30
-      ? { label: "30-Day Avg", value: avg30d, sub: "Per day" }
-      : {
-          label: "Last 24 Hours",
-          value: last24hCount ?? "—",
-          sub: "Rolling window",
-        },
-  ];
-
-  const deltaColor = Number.isFinite(deltaVs7d)
-    ? deltaVs7d >= 0
-      ? "text-emerald-600"
-      : "text-rose-600"
-    : paceVsYesterday == null
-    ? "text-slate-600"
-    : paceVsYesterday >= 0
-    ? "text-emerald-600"
-    : "text-rose-600";
-
-  const deltaLabel = Number.isFinite(deltaVs7d)
-    ? "vs 7-Day Avg"
-    : "Pace vs Yesterday";
-  const deltaValue = Number.isFinite(deltaVs7d)
-    ? `${deltaVs7d > 0 ? "+" : ""}${deltaVs7d}%`
-    : paceVsYesterday == null
-    ? "—"
-    : `${paceVsYesterday >= 0 ? "+" : ""}${paceVsYesterday}%`;
-  const deltaSub = Number.isFinite(deltaVs7d)
-    ? "Positive = busier"
-    : "Positive = ahead of yesterday";
-
-  return (
-    <Card
-      className="rounded-2xl border backdrop-blur-xl transition-all"
-      style={{
-        background: TMOBILE.surface,
-        borderColor: TMOBILE.stroke,
-        boxShadow: TMOBILE.glow,
-      }}
-    >
-      <CardHeader className="pb-2">
-        <CardTitle className="text-slate-900">Business Insights</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-5 gap-4">
-          {cards.map((c) => (
-            <KPI
-              key={c.label}
-              label={c.label}
-              value={c.value ?? "—"}
-              sub={c.sub}
-            />
-          ))}
-          <KPI
-            label={deltaLabel}
-            value={deltaValue}
-            sub={deltaSub}
-            icon={<Signal />}
-          />
-        </div>
-
-        <div className="h-[220px] w-full">
-          <ResponsiveContainer>
-            <BarChart data={hourlyToday || []}>
-              <CartesianGrid strokeDasharray="3 3" stroke={TMOBILE.grid} />
-              <XAxis dataKey="hour" tick={{ fontSize: 10 }} interval={2} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-              <Tooltip
-                contentStyle={{ borderRadius: 12, borderColor: TMOBILE.stroke }}
-                labelStyle={{ fontWeight: 600 }}
-              />
-              <Bar
-                dataKey="count"
-                fill={TMOBILE.magenta}
-                radius={[8, 8, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className={`text-xs ${deltaColor}`}>
-          {Number.isFinite(deltaVs7d)
-            ? deltaVs7d === 0
-              ? "On pace with your 7-day average."
-              : deltaVs7d > 0
-              ? "Busier than usual versus the 7-day average."
-              : "Quieter than usual versus the 7-day average."
-            : paceVsYesterday == null
-            ? "Historical averages unavailable — using yesterday/last 24h as a short-term baseline."
-            : paceVsYesterday === 0
-            ? "On pace with yesterday."
-            : paceVsYesterday > 0
-            ? "Ahead of yesterday's pace."
-            : "Behind yesterday's pace."}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 /** --- PAGE --- */
 export default function DashboardDemo() {
   const {
@@ -465,27 +407,68 @@ export default function DashboardDemo() {
     log,
     metrics,
     todayCount,
-    projectedToday,
+    projectedToday, // still used in BusinessInsights fallback calc if you want
     deltaVs7d,
     hourlyToday,
     opsSeries,
   } = useLiveTickets();
 
+  // IHR (ASN AS21928, 5-minute window, 30s refresh)
+  const {
+    alertsPerMinute = [],
+    lastUpdated: ihrLastUpdated,
+    error: ihrError,
+  } = useIHR({
+    asn: "AS21928",
+    minutes: 5,
+    pollMs: 30_000,
+  });
+
+  // 🛰️ Overall IHR network status (via your /api/ihr/network route)
+  const [net, setNet] = useState(null);
+  const [netErr, setNetErr] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    async function pullNet() {
+      try {
+        const r = await fetch("/api/ihr/network?asn=AS21928");
+        const j = await r.json();
+        if (!alive) return;
+        if (r.ok && j?.ok) {
+          setNet(j);
+          setNetErr(null);
+        } else {
+          setNet(null);
+          setNetErr(j?.message || j?.error || "unavailable");
+        }
+      } catch (e) {
+        if (!alive) return;
+        setNet(null);
+        setNetErr(e?.message || "fetch_failed");
+      }
+    }
+    pullNet();
+    const id = setInterval(pullNet, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  // KPI: sum of IHR alerts in the last 5m
+  const ihrTotal5m = useMemo(
+    () => (alertsPerMinute || []).reduce((s, p) => s + Number(p.count || 0), 0),
+    [alertsPerMinute]
+  );
+
   const latestConfirmed = (series || []).at(-1)?.confirmed ?? 70;
-  const latestProjected = (series || []).at(-1)?.projected ?? latestConfirmed;
 
-  const [title, setTitle] = useState("No signal near downtown");
-  const [city, setCity] = useState("Dallas");
-  const [severity, setSeverity] = useState("critical");
-  const [closeId, setCloseId] = useState("");
-
-  // --- NEW: simple metrics as fallbacks (yesterday / last24h / projectedToday)
+  // --- simple metrics as fallbacks (yesterday / last24h / projectedToday)
   const [simple, setSimple] = useState({
     yesterdayCount: null,
     last24hCount: null,
     projectedToday: null,
   });
-
   useEffect(() => {
     let alive = true;
     async function pull() {
@@ -510,6 +493,17 @@ export default function DashboardDemo() {
       clearInterval(id);
     };
   }, []);
+
+  // Derive a pretty subtitle for the IHR status card
+  const netOK = !!net;
+  const netCC = net?.country ? String(net.country).toUpperCase() : "";
+  const netName = net?.name || "T-Mobile";
+  const netASN = net?.asn ? `AS${net.asn}` : "AS21928";
+  const netSub = netOK
+    ? `${countryFlag(netCC)} ${netASN} — ${netName}${
+        netCC ? ` (${netCC})` : ""
+      }`
+    : "Network reachability";
 
   return (
     <div
@@ -553,7 +547,7 @@ export default function DashboardDemo() {
               T-Mobile AI Dashboard
             </h1>
             <p className="text-slate-700/80 text-sm md:text-base">
-              Real-time sentiment & operations.
+              Real-time sentiment, network health & operations.
             </p>
           </div>
 
@@ -566,12 +560,11 @@ export default function DashboardDemo() {
               }}
               onClick={async () => {
                 const res = await actions.createTicket({
-                  title,
-                  city,
-                  severity,
+                  title: "No signal near downtown",
+                  city: "Dallas",
+                  severity: "critical",
                 });
                 if (!res || res.success !== true) alert("Create failed");
-                if (res?.ticket?._id) setCloseId(res.ticket._id);
               }}
             >
               <RefreshCw className="h-4 w-4 mr-2" /> Create Ticket
@@ -583,37 +576,63 @@ export default function DashboardDemo() {
       {/* Content */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 md:px-10 py-6 space-y-6">
         {/* KPIs */}
-        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <KPI
             label="Happiness Index"
             value={`${Math.round(latestConfirmed)}`}
             sub="Confirmed"
-            icon={<Activity />}
+            icon={<Activity className="h-4 w-4" />}
+            tone="primary"
           />
+
           <KPI
-            label="Projected HI"
-            value={`${Math.round(latestProjected)}`}
-            sub="After last agent"
-            icon={<Signal />}
+            label="IHR Alerts (5m)"
+            value={`${ihrTotal5m}`}
+            sub={
+              ihrLastUpdated
+                ? `Network delay alarms • ${new Date(
+                    ihrLastUpdated
+                  ).toLocaleTimeString()}`
+                : "Network delay alarms"
+            }
+            icon={<Signal className="h-4 w-4" />}
+            tone={ihrTotal5m > 0 ? "warn" : "success"}
           />
+
           <KPI
             label="Open Tickets"
             value={`${stats?.open ?? 0}`}
             sub="Current open"
-            icon={<Frown />}
+            icon={<Frown className="h-4 w-4" />}
+            tone={stats?.open > 0 ? "warn" : "success"}
           />
+
           <KPI
             label="Fixed Tickets"
             value={`${stats?.fixed ?? 0}`}
             sub="Resolved"
-            icon={<Smile />}
+            icon={<Smile className="h-4 w-4" />}
+            tone="success"
+          />
+
+          {/* 🛰️ Overall IHR Status */}
+          <KPI
+            label="IHR Overall Status"
+            value={netOK ? "OK" : "—"}
+            sub={netSub}
+            icon={<Globe2 className="h-4 w-4" />}
+            tone={netOK ? "success" : "warn"}
           />
         </div>
 
         {/* Charts Row */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           <div className="xl:col-span-2">
-            <TrendChart data={series} />
+            <TrendChart
+              series={series}
+              ihrAlertsPerMinute={alertsPerMinute}
+              ihrLastUpdated={ihrLastUpdated}
+            />
           </div>
           <SeverityBar counts={severityCounts} />
         </div>
@@ -621,124 +640,81 @@ export default function DashboardDemo() {
         {/* Ops */}
         <OpsCharts data={opsSeries} />
 
-        {/* Business Insights (with fallbacks) */}
-        <BusinessInsights
-          todayCount={todayCount}
-          projectedToday={projectedToday ?? simple.projectedToday}
-          avg7d={metrics.avg7d}
-          avg30d={metrics.avg30d}
-          deltaVs7d={deltaVs7d}
-          hourlyToday={hourlyToday}
-          yesterdayCount={simple.yesterdayCount}
-          last24hCount={simple.last24hCount}
-        />
-
-        {/* Actions */}
+        {/* Business Insights (simple version using your existing metrics) */}
         <Card
-          className="rounded-2xl border backdrop-blur-xl"
+          className="rounded-2xl border backdrop-blur-xl transition-all"
           style={{
             background: TMOBILE.surface,
             borderColor: TMOBILE.stroke,
             boxShadow: TMOBILE.glow,
           }}
         >
-          <CardHeader>
-            <CardTitle className="text-slate-900">Actions</CardTitle>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-slate-900">Business Insights</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-wrap gap-2">
-              <input
-                aria-label="Ticket title"
-                className="border rounded-xl h-10 px-3 bg-white/80 focus:outline-none focus:ring-2 transition"
-                style={{
-                  borderColor: TMOBILE.stroke,
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.3)",
-                }}
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="title"
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-4">
+              <KPI
+                label="Today's Tickets"
+                value={todayCount ?? "—"}
+                sub="Since 00:00"
+                icon={<Signal className="h-4 w-4" />}
               />
-              <input
-                aria-label="City"
-                className="border rounded-xl h-10 px-3 bg-white/80 focus:outline-none focus:ring-2 transition"
-                style={{
-                  borderColor: TMOBILE.stroke,
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.3)",
-                }}
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                placeholder="city"
+              <KPI
+                label="Projected Today"
+                value={simple.projectedToday ?? projectedToday ?? "—"}
+                sub="Rate-based"
+                icon={<Signal className="h-4 w-4" />}
               />
-              <select
-                aria-label="Severity"
-                className="border rounded-xl h-10 px-3 bg-white/80 focus:outline-none focus:ring-2 transition"
-                style={{ borderColor: TMOBILE.stroke }}
-                value={severity}
-                onChange={(e) => setSeverity(e.target.value)}
-              >
-                <option value="minor">minor</option>
-                <option value="major">major</option>
-                <option value="critical">critical</option>
-              </select>
-              <Button
-                className="rounded-xl text-white transition-all hover:-translate-y-0.5"
-                style={{
-                  background: TMOBILE.magenta,
-                  boxShadow: "0 6px 20px rgba(226,0,116,0.35)",
-                }}
-                onClick={async () => {
-                  const res = await actions.createTicket({
-                    title,
-                    city,
-                    severity,
-                  });
-                  if (!res || res.success !== true) alert("Create failed");
-                  if (res?.ticket?._id) setCloseId(res.ticket._id);
-                }}
-              >
-                Create Ticket
-              </Button>
+              <KPI
+                label="Yesterday"
+                value={simple.yesterdayCount ?? "—"}
+                sub="Prev day"
+                icon={<Signal className="h-4 w-4" />}
+              />
+              <KPI
+                label="Last 24 Hours"
+                value={simple.last24hCount ?? "—"}
+                sub="Rolling window"
+                icon={<Signal className="h-4 w-4" />}
+              />
             </div>
-            <div className="flex gap-2">
-              <input
-                aria-label="Ticket id to close"
-                className="border rounded-xl h-10 px-3 flex-1 bg-white/80 focus:outline-none focus:ring-2 transition"
-                style={{ borderColor: TMOBILE.stroke }}
-                value={closeId}
-                onChange={(e) => setCloseId(e.target.value)}
-                placeholder="ticket _id to close"
-              />
-              <Button
-                variant="outline"
-                className="rounded-xl transition-all hover:-translate-y-0.5"
-                style={{
-                  background: "white",
-                  borderColor: TMOBILE.magenta,
-                  color: TMOBILE.magenta,
-                  boxShadow: "0 4px 16px rgba(226,0,116,0.15)",
-                }}
-                onClick={async () => {
-                  const id = closeId.trim();
-                  if (!id) return alert("Paste a ticket _id");
-                  const res = await actions.closeTicket(id);
-                  if (res.status === 409) alert("Already fixed");
-                  else if (res.status === 404) {
-                    const reason = res.data?.reason || "not found";
-                    alert(`Not found (${reason}). Check route & DB.`);
-                  } else if (!(res.status >= 200 && res.status < 300)) {
-                    alert("Close failed");
-                  }
-                }}
-              >
-                Close Ticket
-              </Button>
+
+            <div className="h-[220px] w-full">
+              <ResponsiveContainer>
+                <BarChart data={hourlyToday || []}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={TMOBILE.grid} />
+                  <XAxis dataKey="hour" tick={{ fontSize: 10 }} interval={2} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: 12,
+                      borderColor: TMOBILE.stroke,
+                    }}
+                    labelStyle={{ fontWeight: 600 }}
+                  />
+                  <Bar
+                    dataKey="count"
+                    fill={TMOBILE.magenta}
+                    radius={[8, 8, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
           </CardContent>
         </Card>
 
-        {/* Alerts + Feed */}
+        {/* (Optional) Tiny errors */}
+        {(ihrError || netErr) && (
+          <div className="text-xs text-rose-600">
+            {ihrError && <>IHR Alerts error: {String(ihrError)} · </>}
+            {netErr && <>IHR Status error: {String(netErr)}</>}
+          </div>
+        )}
+
+        {/* Live Feed + Solved */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Alerts series={series} />
+          <AlertsCard series={series} />
           <Card
             className="lg:col-span-2 rounded-2xl border backdrop-blur-xl"
             style={{
