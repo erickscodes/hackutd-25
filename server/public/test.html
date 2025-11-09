@@ -1,37 +1,220 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Live Stats</title>
+    <title>Live Ticket Dashboard</title>
     <style>
       body {
         font-family: system-ui, sans-serif;
         margin: 24px;
+        background: #f9fafb;
+        color: #111;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+      .card {
+        background: white;
+        border-radius: 10px;
+        padding: 16px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+      .card h2 {
+        margin: 0;
+        font-size: 18px;
+        color: #555;
+      }
+      .card p {
+        font-size: 32px;
+        margin: 8px 0 0;
+        font-weight: bold;
+      }
+      .happy-bar {
+        background: #e5e7eb;
+        border-radius: 8px;
+        height: 20px;
+        overflow: hidden;
+        margin-top: 8px;
+      }
+      .happy-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #22c55e, #4ade80);
+        transition: width 0.5s;
       }
       pre {
         background: #f6f6f6;
         padding: 12px;
         border-radius: 8px;
+        height: 220px;
+        overflow-y: auto;
+        font-size: 14px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        margin: 8px 0;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      input,
+      select,
+      button {
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #d1d5db;
+      }
+      button {
+        background: #111;
+        color: #fff;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #fff;
+        color: #111;
+        border: 1px solid #111;
       }
     </style>
   </head>
   <body>
-    <h1>Live Ticket Stats</h1>
-    <pre id="log">connecting…</pre>
+    <h1>📡 Live Ticket Dashboard</h1>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Total Tickets</h2>
+        <p id="total">0</p>
+      </div>
+      <div class="card">
+        <h2>Open Tickets</h2>
+        <p id="open">0</p>
+      </div>
+      <div class="card">
+        <h2>Fixed Tickets</h2>
+        <p id="fixed">0</p>
+      </div>
+      <div class="card">
+        <h2>Flagged</h2>
+        <p id="flagged">0</p>
+      </div>
+      <div class="card">
+        <h2>Avg Active (min)</h2>
+        <p id="active">0</p>
+      </div>
+      <div class="card">
+        <h2>Avg Resolution (min)</h2>
+        <p id="resolution">0</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>💖 Happiness</h2>
+      <p id="happiness-value">100</p>
+      <div class="happy-bar">
+        <div id="happy-fill" class="happy-fill" style="width: 100%"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Actions</h2>
+      <div class="row">
+        <input id="title" placeholder="title" value="No signal near downtown" />
+        <input id="city" placeholder="city" value="Dallas" />
+        <select id="severity">
+          <option>minor</option>
+          <option>major</option>
+          <option selected>critical</option>
+        </select>
+        <button id="createBtn">Create Ticket</button>
+      </div>
+      <div class="row">
+        <input id="closeId" placeholder="ticket _id to close" style="flex: 1" />
+        <button id="closeBtn" class="secondary">Close Ticket</button>
+      </div>
+    </div>
+
+    <h2>📋 Live Feed</h2>
+    <pre id="log">Connecting...</pre>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
       const logEl = document.getElementById("log");
-      const log = (m) => (logEl.textContent += m + "\n");
+      const log = (m) => {
+        const ts = new Date().toLocaleTimeString();
+        logEl.textContent = `[${ts}] ${m}\n` + logEl.textContent;
+      };
 
-      const socket = io(); // connects to same origin: http://localhost:4000
+      const setText = (id, val) =>
+        (document.getElementById(id).textContent = val);
 
+      function updateHappiness(h) {
+        const fill = document.getElementById("happy-fill");
+        const val = document.getElementById("happiness-value");
+        const pct = Math.max(0, Math.min(100, h));
+        fill.style.width = pct + "%";
+        val.textContent = pct;
+        if (pct < 40)
+          fill.style.background = "linear-gradient(90deg,#ef4444,#f87171)";
+        else if (pct < 70)
+          fill.style.background = "linear-gradient(90deg,#facc15,#fde047)";
+        else fill.style.background = "linear-gradient(90deg,#22c55e,#4ade80)";
+      }
+
+      const socket = io();
       socket.on("connect", () => log("✅ connected " + socket.id));
       socket.on("disconnect", () => log("❌ disconnected"));
+
+      socket.on("live:stats", (s) => {
+        log("📊 stats: " + JSON.stringify(s));
+        setText("total", s.total);
+        setText("open", s.open);
+        setText("fixed", s.fixed);
+        setText("flagged", s.flagged);
+        setText("active", s.avgActiveMinutes);
+        setText("resolution", s.avgResolutionMinutes);
+        updateHappiness(s.happiness);
+      });
+
       socket.on("ticket:created", (t) =>
-        log("🆕 ticket: " + JSON.stringify(t))
+        log("🆕 ticket: " + t.title + " (" + t.severity + ")")
       );
-      socket.on("live:stats", (s) => log("📊 stats: " + JSON.stringify(s)));
+      socket.on("ticket:closed", (t) => log("✅ ticket closed: " + t.title));
+      socket.on("ticket:updated", (t) =>
+        log("✳️ ticket updated: " + JSON.stringify(t))
+      );
+      socket.on("happiness:update", ({ happiness }) => {
+        log("💖 happiness update: " + happiness);
+        updateHappiness(happiness);
+      });
+
+      // Buttons
+      document.getElementById("createBtn").onclick = async () => {
+        const title = document.getElementById("title").value || "Test ticket";
+        const city = document.getElementById("city").value || "Dallas";
+        const severity = document.getElementById("severity").value || "minor";
+        const res = await fetch("/api/test-ticket", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, city, severity }),
+        });
+        if (!res.ok) log("❗ create failed");
+      };
+
+      document.getElementById("closeBtn").onclick = async () => {
+        const id = document.getElementById("closeId").value.trim();
+        if (!id) return alert("Paste a ticket _id");
+        const res = await fetch(`/api/tickets/${id}/close`, {
+          method: "PATCH",
+        });
+        if (res.status === 409) log("ℹ️ already fixed");
+        else if (res.status === 404) log("❗ not found");
+        else if (!res.ok) log("❗ close failed");
+      };
     </script>
   </body>
 </html>

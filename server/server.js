@@ -2,21 +2,26 @@ import express from "express";
 import dotenv from "dotenv";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
+import mongoose from "mongoose";
 import { connectDB } from "./db/connectToDB.js";
 import Ticket from "./models/Ticket.js";
+import ChatMessage from "./models/ChatMessage.js";
 
 dotenv.config();
 // console.log("OPEN_API_KEY:", process.env.OPEN_API_KEY);
 
 const app = express();
 app.use(express.json());
-app.use(express.static("public")); // serves /public/test.html
+app.use(express.static("public")); // serves /public/*.html
 
 // --- HTTP + WebSocket setup ---
 const server = http.createServer(app);
 const io = new SocketIOServer(server, { cors: { origin: "*" } });
 
-// --- Compute stats (JSON snapshot) ---
+// --- Demo Happiness score (in-memory) ---
+let happiness = 100; // starts at 100
+
+// --- Helpers ---
 async function computeStats() {
   const total = await Ticket.countDocuments();
   const open = await Ticket.countDocuments({ status: { $ne: "fixed" } });
@@ -64,10 +69,10 @@ async function computeStats() {
     severityCounts,
     avgActiveMinutes: +(avgActiveMs / 60000).toFixed(1),
     avgResolutionMinutes: +(avgResolutionMs / 60000).toFixed(1),
+    happiness,
   };
 }
 
-// --- Emit stats over WS ---
 async function computeAndEmitStats() {
   try {
     const payload = await computeStats();
@@ -77,27 +82,129 @@ async function computeAndEmitStats() {
   }
 }
 
-// --- REST routes ---
+// --- REST: test ticket (kept for curl/Postman) ---
 app.post("/api/test-ticket", async (req, res) => {
   try {
     const {
       title = "Test ticket",
       city = "Dallas",
       severity = "minor",
-      status = "open", // optional if your model has default
+      status = "open",
     } = req.body || {};
-
     const ticket = await Ticket.create({ title, city, severity, status });
-    res.json({ success: true, ticket });
 
+    happiness = Math.max(0, happiness - 5);
+    io.emit("happiness:update", { happiness });
     io.emit("ticket:created", ticket);
     await computeAndEmitStats();
+
+    res.json({ success: true, ticket });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// --- REST: create real ticket (used by chat.html “Start Chat”) ---
+app.post("/api/tickets", async (req, res) => {
+  try {
+    const {
+      requesterName = "Guest",
+      city = "Unknown",
+      title = "Issue",
+      description = "",
+      severity = "minor",
+    } = req.body || {};
+
+    const ticket = await Ticket.create({
+      title,
+      description,
+      city,
+      severity,
+      status: "open",
+      createdBy: requesterName,
+      messageCount: 0,
+    });
+
+    happiness = Math.max(0, happiness - 5);
+    io.emit("happiness:update", { happiness });
+    io.emit("ticket:created", ticket);
+    await computeAndEmitStats();
+
+    res.json({ success: true, ticket });
+  } catch (err) {
+    console.error("Create ticket error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- REST: append chat message (stores + broadcasts to room and staff) ---
+app.post("/api/tickets/:id/chat", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      authorType = "user",
+      authorName = "Guest",
+      text = "",
+    } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid ticket id" });
+    }
+    const ticket = await Ticket.findById(id);
+    if (!ticket)
+      return res
+        .status(404)
+        .json({ success: false, message: "Ticket not found" });
+    if (!text.trim())
+      return res.status(400).json({ success: false, message: "Text required" });
+
+    const message = await ChatMessage.create({
+      ticketId: id,
+      authorType,
+      authorName,
+      text,
+    });
+
+    // Update denorm fields for dashboards
+    ticket.lastMessageAt = new Date();
+    ticket.lastMessageSnippet = text.slice(0, 120);
+    ticket.messageCount = (ticket.messageCount || 0) + 1;
+    await ticket.save();
+
+    // Broadcast (normalize ticketId to string)
+    const room = `ticket:${id}`;
+    const payload = {
+      _id: message._id,
+      ticketId: String(message.ticketId),
+      authorType: message.authorType,
+      authorName: message.authorName,
+      text: message.text,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+    };
+
+    io.to(room).emit("chat:new", payload);
+    io.to("support").emit("chat:new", payload);
+
+    // Also push meta so lists can update counts/snippets
+    io.emit("ticket:meta", {
+      id: String(ticket._id),
+      messageCount: ticket.messageCount,
+      lastMessageSnippet: ticket.lastMessageSnippet,
+      lastMessageAt: ticket.lastMessageAt,
+    });
+
+    res.json({ success: true, message: payload });
+  } catch (err) {
+    console.error("Chat error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- REST: list tickets ---
 app.get("/api/tickets", async (_req, res) => {
   try {
     const tickets = await Ticket.find().sort({ createdAt: -1 });
@@ -114,11 +221,26 @@ app.get("/", (req, res) => {
 // --- WebSocket connection event ---
 io.on("connection", async (socket) => {
   console.log(`🟢 Client connected: ${socket.id}`);
+  socket.emit("happiness:update", { happiness });
   await computeAndEmitStats();
 
-  socket.on("disconnect", () => {
-    console.log(`🔴 Client disconnected: ${socket.id}`);
+  socket.on("join", (data = {}) => {
+    const { role, ticketId } = data;
+    if (role === "staff") {
+      socket.join("support");
+      console.log(`👥 ${socket.id} joined room: support`);
+    }
+    if (ticketId) {
+      const room = `ticket:${String(ticketId)}`;
+      socket.join(room);
+      socket.emit("joined", { room });
+      console.log(`🧵 ${socket.id} joined room: ${room}`);
+    }
   });
+
+  socket.on("disconnect", () =>
+    console.log(`🔴 Client disconnected: ${socket.id}`)
+  );
 });
 
 // --- Start server ---
