@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import mongoose from "mongoose";
+import OpenAI from "openai";
 import { connectDB } from "./db/connectToDB.js";
 import Ticket from "./models/Ticket.js";
 import ChatMessage from "./models/ChatMessage.js";
@@ -11,7 +12,19 @@ import metricsRouter from "./metrics.js";
 
 dotenv.config();
 
+// OpenAI client (optional - used to generate bot replies). Requires OPENAI_API_KEY in env.
+const openaiApiKey = process.env.OPENAI_API_KEY || process.env.OPEN_API_KEY;
+if (!openaiApiKey) {
+  console.warn("OpenAI API key not found. AI replies disabled. Set OPENAI_API_KEY in server/.env or environment.");
+}
+
+const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
+console.log(openai ? "OpenAI client initialized" : "OpenAI client not initialized");
+
 const app = express();
+
+// OpenAI client (optional - used to generate bot replies). Requires OPENAI_API_KEY in env.
+
 
 // ---- Put logger FIRST so all requests are visible
 app.use((req, _res, next) => {
@@ -184,6 +197,8 @@ app.post("/api/tickets", async (req, res) => {
 });
 
 // --- REST: append chat message ---
+const activateAgentTickets = new Map();
+
 app.post("/api/tickets/:id/chat", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -241,6 +256,79 @@ app.post("/api/tickets/:id/chat", async (req, res) => {
       lastMessageSnippet: ticket.lastMessageSnippet,
       lastMessageAt: ticket.lastMessageAt,
     });
+
+    if (authorType === "agent" || authorType === "staff") {
+      activateAgentTickets.set(id, Date.now());
+    }
+
+    // Spawn an asynchronous job to generate an AI reply (fire-and-forget).
+    // This keeps the user-facing request fast while still producing a bot reply
+    // that will be persisted and emitted when ready. Requires OPENAI_API_KEY.
+    (async () => {
+      try {
+        if (!openai) return; // OpenAI not configured
+        if (authorType !== "user") return;
+
+        const agentLastActive = activateAgentTickets.get(id);
+        if (agentLastActive && Date.now() - agentLastActive < 5 * 60 * 1000) {
+          return;
+        } 
+
+        // Build a small prompt; can be expanded to include recent history later.
+        const systemPrompt =
+          "You are a T-Mobile customer support assistant. Only answer questions related to T-Mobile services, accounts, billing, technical support, or store information. If asked about unrelated topics (such as games, entertainment, or anything not about T-Mobile), reply: 'Sorry, I can only assist with T-Mobile related questions.'";"You are a T-Mobile customer support assistant. Only answer questions related to T-Mobile services, accounts, billing, technical support, or store information. If asked about unrelated topics (such as games, entertainment, or anything not about T-Mobile), reply: 'Sorry, I can only assist with T-Mobile related questions.'";
+
+        const aiResp = await openai.chat.completions.create({
+          model: "gpt-3.5-turbo",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: text },
+          ],
+          max_tokens: 1000,
+          temperature: 0.8,
+        });
+
+        const botText =
+          aiResp?.choices?.[0]?.message?.content?.trim() ||
+          (aiResp?.choices?.[0]?.delta?.content ?? null);
+        if (!botText) return;
+
+        const botMsg = await ChatMessage.create({
+          ticketId: new mongoose.Types.ObjectId(id),
+          authorType: "bot",
+          authorName: "AutoBot",
+          text: botText,
+        });
+
+        // Update ticket denorm fields
+        ticket.lastMessageAt = botMsg.createdAt;
+        ticket.lastMessageSnippet = botMsg.text.slice(0, 120);
+        ticket.messageCount = (ticket.messageCount || 0) + 1;
+        await ticket.save();
+
+        const botPayload = {
+          _id: botMsg._id,
+          ticketId: String(botMsg.ticketId),
+          authorType: botMsg.authorType,
+          authorName: botMsg.authorName,
+          text: botMsg.text,
+          createdAt: botMsg.createdAt,
+          updatedAt: botMsg.updatedAt,
+        };
+
+        io.to(`ticket:${id}`).emit("chat:new", botPayload);
+        io.to("support").emit("chat:new", botPayload);
+
+        io.emit("ticket:meta", {
+          id: String(ticket._id),
+          messageCount: ticket.messageCount,
+          lastMessageSnippet: ticket.lastMessageSnippet,
+          lastMessageAt: ticket.lastMessageAt,
+        });
+      } catch (e) {
+        console.error("OpenAI reply error:", e?.message || e);
+      }
+    })();
 
     res.json({ success: true, message: payload });
   } catch (err) {
