@@ -398,6 +398,131 @@ function sentimentScore(s) {
   }
 }
 
+// ---------- AI: reanalyze history & update ticket (no bot reply) ----------
+async function analyzeTicketHistory(
+  ticketId,
+  {
+    model = "gpt-4o-mini", // faster/cheap; change if you want
+    maxHistory = 200, // pull more lines for end-of-life analysis
+    responseTokens = 400,
+    modelMaxTokens = 12000,
+  } = {}
+) {
+  if (!openai) {
+    console.warn("OpenAI not configured; skipping analysis.");
+    return { skipped: true, reason: "no_openai" };
+  }
+  const ticket = await Ticket.findById(ticketId);
+  if (!ticket) throw new Error("Ticket not found for analysis");
+
+  const systemPrompt = `
+You are a T-Mobile support QA assistant evaluating a completed chat.
+
+Return ONLY valid JSON:
+{
+  "summary": "<2-4 sentence neutral summary of the issue and steps taken>",
+  "sentiment": "<neutral|upset|happy|confused>",
+  "flagged": <true|false>,
+  "keywords": ["<2-6 words each>", "..."]
+}
+
+Guidelines:
+- "keywords": 1–5 short issue phrases (e.g., "billing error", "SIM activation", "network outage").
+- Set "flagged": true if customer appears upset OR any action requires human follow-up (billing adjustments, refunds, identity/account verification) OR there are compliance concerns.
+- Be concise and professional.
+`.trim();
+
+  // Load extended history for a better final read
+  const history = await fetchRecentMessages(ticketId, maxHistory);
+
+  const oaMessages = buildMessagesForOpenAI({
+    systemPrompt,
+    ticket,
+    history,
+    modelMaxTokens,
+    responseTokens,
+  });
+
+  const aiResp = await openai.chat.completions.create({
+    model,
+    messages: oaMessages,
+    max_tokens: responseTokens,
+    temperature: 0.2,
+  });
+
+  const raw = aiResp?.choices?.[0]?.message?.content?.trim() || "{}";
+  let aiJson;
+  try {
+    aiJson = JSON.parse(raw);
+  } catch {
+    aiJson = {
+      summary: raw.slice(0, 400) || "",
+      sentiment: "neutral",
+      flagged: false,
+      keywords: [],
+    };
+  }
+
+  // Normalize
+  const aiSummary = (aiJson.summary || "").toString().slice(0, 400);
+  const aiSentiment = (aiJson.sentiment || "neutral").toString();
+  const aiKeywords = Array.isArray(aiJson.keywords) ? aiJson.keywords : [];
+  const flagged = Boolean(
+    aiJson.flagged || aiSentiment.toLowerCase() === "upset"
+  );
+
+  // ---------- REST: reanalyze ticket on demand ----------
+  app.post("/api/tickets/:id/reanalyze", async (req, res) => {
+    try {
+      const id = String(req.params.id || "").trim();
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid ticket id" });
+      }
+      const result = await analyzeTicketHistory(id);
+      return res.json({ success: true, ...result });
+    } catch (err) {
+      console.error("Reanalyze error:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Save onto ticket
+  ticket.aiSummary = aiSummary;
+  ticket.aiSentiment = aiSentiment;
+  ticket.aiKeywords = aiKeywords;
+  ticket.sentiment = aiSentiment; // legacy fields you already use
+  ticket.keywords = aiKeywords;
+  ticket.analyzedAt = new Date();
+  if (flagged) {
+    ticket.flagged = true;
+    ticket.flaggedAt = ticket.flaggedAt || new Date();
+  }
+  await ticket.save();
+
+  // Emit for live dashboards / panels
+  emitTicketMeta(ticket);
+  io.emit("ticket:updated", {
+    id: String(ticket._id),
+    aiSentiment: ticket.aiSentiment,
+    aiScore: sentimentScore(ticket.aiSentiment),
+    aiKeywords: ticket.aiKeywords,
+    aiSummary: ticket.aiSummary,
+    lastMessageSnippet: ticket.lastMessageSnippet,
+    messageCount: ticket.messageCount,
+    flagged: ticket.flagged,
+  });
+
+  return {
+    success: true,
+    aiSentiment: ticket.aiSentiment,
+    aiKeywords: ticket.aiKeywords,
+    aiSummary: ticket.aiSummary,
+    flagged: ticket.flagged,
+  };
+}
+
 // ---------- REST: test ticket ----------
 app.post("/api/test-ticket", async (req, res) => {
   try {
@@ -546,6 +671,61 @@ app.get("/api/tickets/:id/messages", async (req, res) => {
   } catch (err) {
     console.error("History error:", err);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ---------- REST: close ticket (optionally reanalyze) ----------
+app.patch("/api/tickets/:id/close", async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(404)
+        .json({ success: false, message: "not found", reason: "bad_id" });
+    }
+
+    const ticket = await Ticket.findById(id);
+    if (!ticket) {
+      return res
+        .status(404)
+        .json({ success: false, message: "not found", reason: "missing" });
+    }
+
+    // Mark closed (idempotent)
+    if (ticket.status !== "fixed") {
+      ticket.status = "fixed";
+      ticket.closedAt = new Date();
+      await ticket.save();
+      io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
+      emitTicketMeta(ticket);
+      await computeAndEmitStats();
+    } else {
+      io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
+      await computeAndEmitStats();
+    }
+
+    // Optional toggle: run AI after closing
+    const shouldReanalyze =
+      req.body?.reanalyze === true || req.query?.reanalyze === "1" || true; // <-- set to `true` to ALWAYS reanalyze on close
+
+    let analysis = null;
+    if (shouldReanalyze) {
+      try {
+        analysis = await analyzeTicketHistory(id);
+      } catch (e) {
+        console.error("Analyze on close failed:", e?.message || e);
+      }
+    }
+
+    return res.json({
+      success: true,
+      _id: ticket._id,
+      reanalyzed: Boolean(analysis && analysis.success),
+      ...(analysis || {}),
+    });
+  } catch (err) {
+    console.error("Close ticket error:", err);
+    return res.status(500).json({ success: false, message: "server_error" });
   }
 });
 

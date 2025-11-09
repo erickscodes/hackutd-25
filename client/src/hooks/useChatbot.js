@@ -1,19 +1,19 @@
-// useChatbot.js
+// useChatbot.noLocalStorage.js
+// Customer chat hook with real-time updates via Socket.IO.
+// This version removes ALL localStorage usage.
+// Optional: pass an `initialTicketId` if you want to reuse an existing ticket (SSR, URL param, etc.)
+
 import { useEffect, useRef, useState, useCallback } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 
-const STORAGE_KEY = "tmobile_chat_messages_v1";
-const TICKET_KEY = "tmobile_chat_ticket_id_v1";
-
 /**
- * Customer chat hook with real-time updates via Socket.IO.
- *
  * Options:
  *  - apiBase: REST base path (default "/api")
  *  - socketOrigin: Socket.IO origin ("" for same origin, or e.g. "http://localhost:4000")
  *  - simulate: fallback canned replies (default false)
  *  - requesterName: display name for the user (default "Guest")
+ *  - initialTicketId: (optional) existing ticket id to join instead of creating a new one
  */
 export default function useChatbot(options = {}) {
   const {
@@ -21,62 +21,29 @@ export default function useChatbot(options = {}) {
     socketOrigin = "",
     simulate = false,
     requesterName = "Guest",
+    initialTicketId,
   } = options;
 
-  const [messages, setMessages] = useState(() => {
+  // If you want to pick up a ticket id from the URL without storing it anywhere:
+  // e.g. /chat.html?t=6910ab... (no persistence)
+  const ticketFromUrl = (() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : [];
+      const u = new URL(window.location.href);
+      return u.searchParams.get("t") || null;
     } catch {
-      return [];
+      return null;
     }
-  });
+  })();
 
+  const [messages, setMessages] = useState([]);
   const [ticketId, setTicketId] = useState(
-    () => localStorage.getItem(TICKET_KEY) || null
+    initialTicketId || ticketFromUrl || null
   );
-
   const [isTyping, setIsTyping] = useState(false);
+
   const socketRef = useRef(null);
   const scrollTrigger = useRef(0);
-
-  // seen IDs to avoid dupes (history + live)
-  const seenIdsRef = useRef(new Set());
-
-  const persist = (arr) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
-    } catch {}
-  };
-
-  const pushMessage = useCallback((msg) => {
-    if (!msg?.id) return;
-    if (seenIdsRef.current.has(msg.id)) return;
-    seenIdsRef.current.add(msg.id);
-
-    setMessages((prev) => {
-      const next = [...prev, msg];
-      persist(next);
-      return next;
-    });
-    // if we got a bot message for this thread, stop typing spinner
-    if (msg.role === "bot") setIsTyping(false);
-    scrollTrigger.current++;
-  }, []);
-
-  const replaceAllMessages = useCallback((arr) => {
-    const ids = new Set();
-    const deduped = [];
-    for (const m of arr) {
-      if (!m?.id || ids.has(m.id)) continue;
-      ids.add(m.id);
-      deduped.push(m);
-    }
-    seenIdsRef.current = ids;
-    setMessages(deduped);
-    persist(deduped);
-    scrollTrigger.current++;
-  }, []);
+  const seenIdsRef = useRef(new Set()); // dedupe for history + live
 
   const normalizeWire = (m) => ({
     id: String(m._id || m.id || crypto.randomUUID()),
@@ -91,11 +58,38 @@ export default function useChatbot(options = {}) {
     ts: new Date(m.createdAt || m.ts || Date.now()).getTime(),
   });
 
-  // --- create ticket once ---
+  const pushMessage = useCallback((msg) => {
+    if (!msg?.id) return;
+    if (seenIdsRef.current.has(msg.id)) return;
+    seenIdsRef.current.add(msg.id);
+
+    setMessages((prev) => {
+      const next = [...prev, msg];
+      return next;
+    });
+
+    if (msg.role === "bot") setIsTyping(false);
+    scrollTrigger.current++;
+  }, []);
+
+  const replaceAllMessages = useCallback((arr) => {
+    const ids = new Set();
+    const deduped = [];
+    for (const m of arr) {
+      if (!m?.id || ids.has(m.id)) continue;
+      ids.add(m.id);
+      deduped.push(m);
+    }
+    seenIdsRef.current = ids;
+    setMessages(deduped);
+    scrollTrigger.current++;
+  }, []);
+
+  // --- create ticket once (unless initialTicketId provided) ---
   useEffect(() => {
     let mounted = true;
     (async () => {
-      if (ticketId) return;
+      if (ticketId) return; // already have one (SSR/url param)
       try {
         const res = await axios.post(`${apiBase}/tickets`, {
           requesterName,
@@ -106,15 +100,12 @@ export default function useChatbot(options = {}) {
         const id = String(res.data?.ticket?._id);
         if (id && mounted) {
           setTicketId(id);
-          localStorage.setItem(TICKET_KEY, id);
-          // we expect welcome + initial user message + AI soon → show typing
-          setIsTyping(true);
+          setIsTyping(true); // expect welcome/AI soon
         }
       } catch {
         if (simulate && mounted) {
           const fake = `local-${crypto.randomUUID()}`;
           setTicketId(fake);
-          localStorage.setItem(TICKET_KEY, fake);
         }
       }
     })();
@@ -123,7 +114,7 @@ export default function useChatbot(options = {}) {
     };
   }, [apiBase, ticketId, requesterName, simulate]);
 
-  // --- initial REST history (safety on mount) ---
+  // --- initial REST history (safety on mount / ticket change) ---
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -150,18 +141,16 @@ export default function useChatbot(options = {}) {
     });
     socketRef.current = socket;
 
-    // helper to (re)join current ticket room
     const joinCurrent = () => {
       if (!ticketId || ticketId.startsWith("local-")) return;
       socket.emit("join", { ticketId, role: "customer" });
     };
 
     socket.on("connect", joinCurrent);
-    // using Manager event is okay, but also cover socket "reconnect" for safety
     socket.io.on("reconnect", joinCurrent);
     socket.on("reconnect", joinCurrent);
 
-    // server backlog right after join (server emits this once)
+    // history backlog (server emits once on join)
     const onHistory = (history) => {
       if (!Array.isArray(history)) return;
       const normalized = history.map(normalizeWire);
@@ -183,11 +172,8 @@ export default function useChatbot(options = {}) {
     };
     socket.on("chat:typing", onTyping);
 
-    // simple visibility-based re-join in case of sleep/wake
     const onVis = () => {
-      if (document.visibilityState === "visible") {
-        joinCurrent();
-      }
+      if (document.visibilityState === "visible") joinCurrent();
     };
     document.addEventListener("visibilitychange", onVis);
 
@@ -201,16 +187,14 @@ export default function useChatbot(options = {}) {
     };
   }, [socketOrigin, ticketId, pushMessage, replaceAllMessages, apiBase]);
 
-  // --- CRITICAL: when ticketId changes, join + force-refresh history immediately ---
+  // --- when ticketId changes, proactively join & refresh history ---
   useEffect(() => {
     if (!ticketId || ticketId.startsWith("local-")) return;
 
-    // if socket already connected, join the room now (don’t wait for reconnect)
     if (socketRef.current?.connected) {
       socketRef.current.emit("join", { ticketId, role: "customer" });
     }
 
-    // eagerly refresh history so we don't miss AI reply that came before join
     (async () => {
       try {
         const r = await axios.get(`${apiBase}/tickets/${ticketId}/messages`);
@@ -260,10 +244,7 @@ export default function useChatbot(options = {}) {
         return;
       }
 
-      // real server: rely on server broadcast for both user echo and AI reply
       setIsTyping(true);
-
-      // safety timeout: if nothing arrives in 10s, stop spinner
       const stopTypingIn = setTimeout(() => setIsTyping(false), 10_000);
 
       try {
@@ -291,9 +272,6 @@ export default function useChatbot(options = {}) {
   const clearChat = useCallback(() => {
     setMessages([]);
     seenIdsRef.current = new Set();
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {}
   }, []);
 
   return {
@@ -303,5 +281,6 @@ export default function useChatbot(options = {}) {
     clearChat,
     scrollTrigger,
     ticketId,
+    setTicketId, // exposed so parent can inject/replace id without storage
   };
 }

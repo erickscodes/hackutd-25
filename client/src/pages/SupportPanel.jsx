@@ -760,7 +760,7 @@ function Bubble({ role, author, text, ts }) {
       title={new Date(ts).toLocaleString()}
       role="group"
     >
-      <div className="text-[11px] opacity-70 mb-1 flex items-center gap-1">
+      <div className="text:[11px] text-[11px] opacity-70 mb-1 flex items-center gap-1">
         <span className="font-semibold truncate max-w-[55%]">
           {author || (isUser ? "Customer" : role === "bot" ? "Bot" : "Staff")}
         </span>
@@ -852,10 +852,32 @@ export default function Support() {
     [tickets.length, openCount, fixedCount]
   );
 
-  // ---- lightweight client analysis (uses your existing /messages route)
+  // ---- API helper to (re)run AI on server
+  const reanalyzeTicket = async (id) => {
+    const res = await fetch(`/api/tickets/${id}/reanalyze`, { method: "POST" });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Reanalyze failed: ${t || res.status}`);
+    }
+    return res.json(); // { success, aiSentiment, aiKeywords, aiSummary, flagged, ... }
+  };
+
+  // ---- Analyze handler used by both buttons (row & header)
   const analyzeTicket = async (ticket) => {
     try {
       setAnalyzingId(ticket._id);
+
+      // 1) Ask server to (re)analyze
+      let ai = null;
+      try {
+        const r = await reanalyzeTicket(ticket._id);
+        ai = r || {};
+      } catch (e) {
+        console.warn(e?.message || e);
+        // continue using existing fields if server fails
+      }
+
+      // 2) Pull messages to compute local stats
       const res = await fetch(`/api/tickets/${ticket._id}/messages`);
       let msgs = [];
       if (res.ok) msgs = await res.json();
@@ -878,12 +900,8 @@ export default function Support() {
         const rem = m % 60;
         return `${h}h ${rem}m`;
       };
-      const ageHuman = createdAt
-        ? toHuman(now.getTime() - createdAt.getTime())
-        : "—";
-      const lastAtHuman = lastAt
-        ? toHuman(now.getTime() - lastAt.getTime())
-        : "—";
+      const ageHuman = createdAt ? toHuman(now - createdAt) : "—";
+      const lastAtHuman = lastAt ? toHuman(now - lastAt) : "—";
 
       const severityScore =
         ticket.severity === "critical"
@@ -892,9 +910,9 @@ export default function Support() {
           ? 2
           : 1;
       const lagScore =
-        lastAt && now.getTime() - lastAt.getTime() > 30 * 60 * 1000
+        lastAt && now - lastAt > 30 * 60 * 1000
           ? 2
-          : lastAt && now.getTime() - lastAt.getTime() > 10 * 60 * 1000
+          : lastAt && now - lastAt > 10 * 60 * 1000
           ? 1
           : 0;
       const volumeScore = msgCount > 8 ? 2 : msgCount > 4 ? 1 : 0;
@@ -917,6 +935,20 @@ export default function Support() {
           ? "Reply with next steps & expected resolution window; set follow-up reminder."
           : "Close loop with resolution or request missing details; offer survey link.";
 
+      // Prefer fresh AI fields from server; fallback to existing ticket fields
+      const sentiment =
+        ai.aiSentiment || ticket.aiSentiment || ticket.sentiment || "neutral";
+      const aiKeywords =
+        ai.aiKeywords || ticket.aiKeywords || ticket.keywords || [];
+      const aiSummary = ai.aiSummary || ticket.aiSummary || "";
+      const flagged =
+        typeof ai.flagged === "boolean" ? ai.flagged : !!ticket.flagged;
+      const aiScore =
+        (sentiment === "happy" && 5) ||
+        (sentiment === "upset" && -5) ||
+        (sentiment === "confused" && -2) ||
+        0;
+
       setAnalysis({
         title: ticket.title || "Untitled",
         severity: ticket.severity || "minor",
@@ -930,16 +962,11 @@ export default function Support() {
         botCount,
         signals: signals.length ? signals : ["No risk signals detected."],
         nextAction,
-        // pull AI fields if your server saved them
-        sentiment: ticket.aiSentiment || ticket.sentiment || "neutral",
-        aiKeywords: ticket.aiKeywords || ticket.keywords || [],
-        aiSummary: ticket.aiSummary || "",
-        flagged: !!ticket.flagged,
-        aiScore:
-          (ticket.aiSentiment === "happy" && 5) ||
-          (ticket.aiSentiment === "upset" && -5) ||
-          (ticket.aiSentiment === "confused" && -2) ||
-          0,
+        sentiment,
+        aiKeywords,
+        aiSummary,
+        flagged,
+        aiScore,
       });
       setAnalysisOpen(true);
     } catch (e) {
@@ -1134,15 +1161,22 @@ export default function Support() {
                 <motion.button
                   whileTap={{ scale: 0.97 }}
                   onClick={() => analyzeTicket(selectedTicket)}
-                  className="px-2.5 py-2 rounded-xl text-sm border inline-flex items-center gap-1"
+                  disabled={!!analyzingId}
+                  className="px-2.5 py-2 rounded-xl text-sm border inline-flex items-center gap-1 disabled:opacity-60"
                   style={{
                     borderColor: T.stroke,
                     background: "rgba(255,255,255,0.95)",
                   }}
                   title="Analyze conversation"
                 >
-                  <Wand2 className="h-4 w-4" />{" "}
-                  <span className="hidden sm:inline">Analyze</span>
+                  {analyzingId ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="h-4 w-4" />
+                  )}
+                  <span className="hidden sm:inline">
+                    {analyzingId ? "Analyzing…" : "Analyze"}
+                  </span>
                 </motion.button>
               )}
             </div>
@@ -1297,7 +1331,7 @@ function Composer({ disabled, input, setInput, onSend }) {
               }
             }}
             placeholder={!disabled ? "Type a reply…" : "Select a ticket first"}
-            className="flex-1 resize-none bg-transparent outline-none text-sm sm:text-[15px] max-h-40 leading-6"
+            className="flex-1 resize-none bg-transparent outline-none text-sm sm:text[15px] sm:text-[15px] max-h-40 leading-6"
             aria-label="Message composer"
           />
           <motion.button
