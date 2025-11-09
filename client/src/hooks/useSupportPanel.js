@@ -5,7 +5,7 @@ import { io } from "socket.io-client";
 const DEFAULT_FILTERS = {
   status: "all", // all | open | fixed
   severity: "all", // all | minor | major | critical
-  q: "", // search text in title/city/snippet
+  q: "",
 };
 
 export default function useSupportPanel(options = {}) {
@@ -19,7 +19,7 @@ export default function useSupportPanel(options = {}) {
   // data
   const [tickets, setTickets] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [messages, setMessages] = useState({}); // { [ticketId]: [msg,msg,...] }
+  const [messages, setMessages] = useState({}); // { [ticketId]: [msg,...] }
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
 
   // status
@@ -32,10 +32,11 @@ export default function useSupportPanel(options = {}) {
 
   // ---- helpers
   const setTicketMessages = useCallback((ticketId, updater) => {
+    const id = String(ticketId);
     setMessages((prev) => {
-      const current = prev[ticketId] || [];
-      const next = typeof updater === "function" ? updater(current) : updater;
-      return { ...prev, [ticketId]: next };
+      const curr = prev[id] || [];
+      const next = typeof updater === "function" ? updater(curr) : updater;
+      return { ...prev, [id]: next };
     });
   }, []);
 
@@ -47,11 +48,18 @@ export default function useSupportPanel(options = {}) {
       const res = await axios.get(`${apiBase}/tickets`);
       const data = Array.isArray(res.data) ? res.data : [];
       setTickets(data);
-      // Initialize message arrays to avoid undefined
-      const m = {};
-      for (const t of data) if (!m[t._id]) m[t._id] = [];
-      setMessages((prev) => ({ ...m, ...prev }));
-      // auto-select first if nothing selected
+
+      // ensure message arrays
+      setMessages((prev) => {
+        const base = { ...prev };
+        for (const t of data) {
+          const id = String(t._id);
+          if (!base[id]) base[id] = [];
+        }
+        return base;
+      });
+
+      // auto-select first if none selected
       if (!selectedId && data.length) setSelectedId(String(data[0]._id));
     } catch (e) {
       setError(e?.response?.data?.error || e.message);
@@ -60,13 +68,11 @@ export default function useSupportPanel(options = {}) {
     }
   }, [apiBase, selectedId]);
 
-  // ---- fetch ticket message history (if backend supports it)
+  // ---- fetch history (if available)
   const fetchHistory = useCallback(
     async (ticketId) => {
       setLoadingThread(true);
       try {
-        // If your backend doesn’t have this yet, return silently.
-        // Implement GET /api/tickets/:id/messages to return [{_id, ticketId, authorType, authorName, text, createdAt}, ...]
         const res = await axios.get(`${apiBase}/tickets/${ticketId}/messages`);
         const arr = Array.isArray(res.data)
           ? res.data
@@ -80,14 +86,15 @@ export default function useSupportPanel(options = {}) {
               ? "staff"
               : "bot",
           author:
-            m.authorName || (m.authorType === "staff" ? "Agent" : m.authorType),
+            m.authorName ||
+            (m.authorType === "staff" ? "Agent" : m.authorType) ||
+            "bot",
           text: m.text || "",
           ts: new Date(m.createdAt || Date.now()).getTime(),
         }));
         setTicketMessages(ticketId, normalized);
-      } catch (_e) {
-        // No-op if 404; leave empty. You can log if you want:
-        // console.warn("No history endpoint, showing live only.");
+      } catch {
+        // ok if endpoint not implemented
       } finally {
         setLoadingThread(false);
       }
@@ -95,61 +102,46 @@ export default function useSupportPanel(options = {}) {
     [apiBase, setTicketMessages]
   );
 
-  // ---- select ticket
+  // ---- select ticket (also join its room)
   const selectTicket = useCallback(
     async (ticketId) => {
-      setSelectedId(ticketId);
-      // join the room for this ticket to receive room-scoped messages
-      if (socketRef.current && ticketId) {
-        socketRef.current.emit("join", { ticketId });
+      const id = String(ticketId);
+      setSelectedId(id);
+      if (socketRef.current && id) {
+        socketRef.current.emit("join", { ticketId: id });
       }
-      // try to fetch history (if available)
-      fetchHistory(ticketId);
+      fetchHistory(id);
     },
     [fetchHistory]
   );
 
-  // ---- send staff message
+  // ---- send staff message (no optimistic add → avoid duplicates)
   const sendMessage = useCallback(
     async (ticketId, text) => {
-      if (!ticketId || !text?.trim()) return { ok: false };
+      const id = String(ticketId || "");
+      if (!id || !text?.trim()) return { ok: false };
       try {
-        const payload = {
+        await axios.post(`${apiBase}/tickets/${id}/chat`, {
           authorType: "staff",
           authorName: staffName,
           text,
-        };
-        const res = await axios.post(
-          `${apiBase}/tickets/${ticketId}/chat`,
-          payload
-        );
-        // optimistic add in case socket delays
-        const now = Date.now();
-        setTicketMessages(ticketId, (curr) => [
-          ...curr,
-          {
-            id: res.data?.message?._id || crypto.randomUUID(),
-            role: "staff",
-            author: staffName,
-            text,
-            ts: now,
-          },
-        ]);
+        });
+        // socket "chat:new" will append the message for us
         return { ok: true };
       } catch (e) {
         return { ok: false, error: e?.response?.data?.message || e.message };
       }
     },
-    [apiBase, staffName, setTicketMessages]
+    [apiBase, staffName]
   );
 
   // ---- close ticket
   const closeTicket = useCallback(
     async (ticketId) => {
-      if (!ticketId) return { ok: false, status: 400 };
+      const id = String(ticketId || "");
+      if (!id) return { ok: false, status: 400 };
       try {
-        const res = await axios.patch(`${apiBase}/tickets/${ticketId}/close`);
-        // refresh counters quickly
+        const res = await axios.patch(`${apiBase}/tickets/${id}/close`);
         fetchTickets();
         return { ok: true, status: res.status, data: res.data };
       } catch (e) {
@@ -160,22 +152,16 @@ export default function useSupportPanel(options = {}) {
     [apiBase, fetchTickets]
   );
 
-  // ---- socket setup
+  // ---- SOCKET SETUP (stable)
   useEffect(() => {
     const socket = io(socketOrigin || undefined, { transports: ["websocket"] });
     socketRef.current = socket;
 
-    // Join support room (broadcast stream)
     if (joinSupportRoom) {
       socket.emit("join", { role: "staff" });
     }
 
-    socket.on("connect", () => {
-      // console.log("Support socket connected", socket.id);
-    });
-
-    // Incoming chat messages (global or room)
-    socket.on("chat:new", (payload) => {
+    const handleChatNew = (payload) => {
       const tId = String(payload.ticketId);
       const role =
         payload.authorType === "user"
@@ -183,6 +169,7 @@ export default function useSupportPanel(options = {}) {
           : payload.authorType === "staff"
           ? "staff"
           : "bot";
+
       const msg = {
         id: String(payload._id || crypto.randomUUID()),
         role,
@@ -190,11 +177,24 @@ export default function useSupportPanel(options = {}) {
         text: payload.text || "",
         ts: new Date(payload.createdAt || Date.now()).getTime(),
       };
-      setTicketMessages(tId, (curr) => [...curr, msg]);
-    });
 
-    // Ticket meta updates (message counts/snippets) — optional
-    socket.on("ticket:meta", (meta) => {
+      setTicketMessages(tId, (curr) => [...curr, msg]);
+
+      // bump/refresh the ticket row immediately
+      setTickets((prev) => {
+        const idx = prev.findIndex((t) => String(t._id) === tId);
+        if (idx < 0) return prev;
+        const updated = [...prev];
+        const t = { ...updated[idx] };
+        t.lastMessageSnippet = msg.text.slice(0, 120);
+        t.lastMessageAt = new Date(msg.ts);
+        t.messageCount = (t.messageCount || 0) + 1; // will be corrected by ticket:meta
+        updated.splice(idx, 1);
+        return [t, ...updated];
+      });
+    };
+
+    const handleTicketMeta = (meta) => {
       const id = String(meta.id);
       setTickets((prev) =>
         prev.map((t) =>
@@ -211,23 +211,31 @@ export default function useSupportPanel(options = {}) {
             : t
         )
       );
-    });
-
-    // New ticket created
-    socket.on("ticket:created", (ticket) => {
-      setTickets((prev) => [ticket, ...prev]);
-      if (!messages[String(ticket._id)]) {
-        setMessages((prev) => ({ ...prev, [String(ticket._id)]: [] }));
-      }
-    });
-
-    // Cleanup
-    return () => {
-      socket.disconnect();
     };
-  }, [socketOrigin, joinSupportRoom, messages]);
 
-  // First load tickets
+    const handleTicketCreated = (ticket) => {
+      setTickets((prev) => [ticket, ...prev]);
+      setMessages((prev) => {
+        const id = String(ticket._id);
+        if (prev[id]) return prev;
+        return { ...prev, [id]: [] };
+      });
+    };
+
+    socket.on("chat:new", handleChatNew);
+    socket.on("ticket:meta", handleTicketMeta);
+    socket.on("ticket:created", handleTicketCreated);
+
+    return () => {
+      socket.off("chat:new", handleChatNew);
+      socket.off("ticket:meta", handleTicketMeta);
+      socket.off("ticket:created", handleTicketCreated);
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [socketOrigin, joinSupportRoom, setTicketMessages]);
+
+  // first load
   useEffect(() => {
     fetchTickets();
   }, [fetchTickets]);

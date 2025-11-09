@@ -3,7 +3,6 @@ import useSupportPanel from "../hooks/useSupportPanel";
 import {
   Flag,
   Search,
-  MessageSquare,
   Send,
   CheckCircle2,
   Clock,
@@ -21,6 +20,25 @@ const T = {
   surface: "rgba(255,255,255,0.70)",
   stroke: "rgba(255,255,255,0.35)",
   ink: "#0f172a",
+};
+
+/* ---------- utils ---------- */
+const useNowTicker = (ms = 30_000) => {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+};
+const timeAgo = (d) => {
+  if (!d) return "—";
+  const ms = Date.now() - new Date(d).getTime();
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return `${h}h ${r}m ago`;
 };
 
 /* ---------- Small UI bits ---------- */
@@ -43,10 +61,7 @@ function Pill({ children, active }) {
 function AnalysisModal({ open, onClose, summary }) {
   if (!open) return null;
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{}}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <motion.div
         initial={{ opacity: 0, y: 12, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -68,7 +83,7 @@ function AnalysisModal({ open, onClose, summary }) {
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1 hover:bg:black/5"
+            className="rounded-lg p-1"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -120,7 +135,6 @@ function AnalysisModal({ open, onClose, summary }) {
               </div>
             </div>
           </div>
-
           <div
             className="rounded-xl p-3 border"
             style={{ borderColor: T.stroke, background: "white" }}
@@ -132,7 +146,6 @@ function AnalysisModal({ open, onClose, summary }) {
               ))}
             </ul>
           </div>
-
           <div
             className="rounded-xl p-3 border"
             style={{ borderColor: T.stroke, background: "white" }}
@@ -164,10 +177,11 @@ function AnalysisModal({ open, onClose, summary }) {
   );
 }
 
-/* ---------- Ticket Row (with Analyze + Flag) ---------- */
+/* ---------- Ticket Row ---------- */
 function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
   const isOpen = t.status !== "fixed";
   const flagged = !!t.flagged;
+  useNowTicker(30_000); // refresh "time ago"
 
   return (
     <motion.button
@@ -175,8 +189,6 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
       layout
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      whileHover={{ scale: 1 }}
-      whileTap={{ scale: 1 }}
       transition={{ type: "spring", stiffness: 320, damping: 24 }}
       className="w-full text-left relative rounded-2xl border p-3 mb-3"
       style={{
@@ -187,18 +199,6 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
           : "0 6px 18px rgba(226,0,116,0.08)",
       }}
     >
-      {/* Active left rail */}
-      <motion.span
-        layout
-        animate={{
-          opacity: active ? 1 : 0,
-          height: active ? "100%" : "0%",
-        }}
-        transition={{ type: "spring", stiffness: 400, damping: 30 }}
-        className="absolute left-0 top-0 w-1.5 rounded-l-2xl"
-        style={{}}
-      />
-
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 pr-2">
           <div className="font-semibold text-slate-800 truncate">
@@ -207,14 +207,13 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
           <div className="mt-1 text-xs text-slate-600 flex items-center gap-3">
             {t.city && (
               <span className="inline-flex items-center gap-1">
-                <MapPin className="h-3 w-3" />
-                {t.city}
+                <MapPin className="h-3 w-3" /> {t.city}
               </span>
             )}
             {t.lastMessageAt && (
               <span className="inline-flex items-center gap-1">
                 <Clock className="h-3 w-3" />
-                {new Date(t.lastMessageAt).toLocaleString()}
+                {timeAgo(t.lastMessageAt)} {/* live relative time */}
               </span>
             )}
           </div>
@@ -225,31 +224,27 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
           )}
         </div>
 
-        {/* Right controls */}
         <div className="flex items-center gap-2 shrink-0">
           <Pill active={!isOpen}>{isOpen ? "Open" : "Fixed"}</Pill>
           <Pill>{t.severity || "minor"}</Pill>
+          {typeof t.messageCount === "number" && (
+            <Pill>{t.messageCount} msg</Pill>
+          )}
 
-          {/* Only show when flagged */}
           {flagged && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onFlag?.(t); // typically toggles to false
+                onFlag?.(t);
               }}
               title="Flagged"
-              className="rounded-lg px-2 py-1.5 border inline-flex items-center justify-center"
-              style={{
-                background: "#ef4444", // Tailwind red-500
-                borderColor: "rgba(0,0,0,0.05)",
-                color: "white",
-              }}
+              className="rounded-lg px-2 py-1.5 border inline-flex items-center justify-center text-white"
+              style={{ background: "#ef4444", borderColor: "rgba(0,0,0,0.05)" }}
             >
               <Flag className="h-4 w-4" />
             </button>
           )}
 
-          {/* AI analyze */}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -277,6 +272,8 @@ function TicketRow({ t, active, onClick, onAnalyze, onFlag, analyzing }) {
 function Bubble({ role, author, text, ts }) {
   const isUser = role === "user";
   const isStaff = role === "staff";
+  useNowTicker(30_000); // live time in tooltip
+
   return (
     <motion.div
       layout
@@ -295,16 +292,13 @@ function Bubble({ role, author, text, ts }) {
         color: isStaff ? "#fff" : T.ink,
         borderColor: isStaff ? "transparent" : T.stroke,
       }}
+      title={new Date(ts).toLocaleString()}
     >
       <div className="text-[11px] opacity-75 mb-1">
         <span className="font-semibold">
           {author || (isUser ? "Customer" : "Bot")}
         </span>{" "}
-        ·{" "}
-        {new Date(ts).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}
+        · {timeAgo(ts)}
       </div>
       <div className="text-sm whitespace-pre-wrap leading-relaxed">{text}</div>
     </motion.div>
@@ -329,10 +323,9 @@ export default function Support() {
     loading,
     loadingThread,
     error,
-    // optional: expose getMessages in the hook, but we’ll fetch here
   } = useSupportPanel({
     apiBase: "/api",
-    socketOrigin: "", // set "http://localhost:4000" if needed
+    socketOrigin: "", // set "http://localhost:4000" when client ≠ server origin
     staffName: "Agent",
   });
 
@@ -375,42 +368,35 @@ export default function Support() {
     [tickets.length, openCount, fixedCount]
   );
 
-  /* ---------- AI Analyze (client-only heuristic) ---------- */
+  // ---- Analyze (client heuristic)
   const analyzeTicket = async (ticket) => {
     try {
       setAnalyzingId(ticket._id);
-      // Fetch messages (server route exists from earlier backend)
       const res = await fetch(`/api/tickets/${ticket._id}/messages`);
       let msgs = [];
       if (res.ok) msgs = await res.json();
 
-      // quick counts
       const userCount = msgs.filter((m) => m.authorType === "user").length;
       const staffCount = msgs.filter((m) => m.authorType === "staff").length;
       const botCount = msgs.filter((m) => m.authorType === "bot").length;
       const msgCount = msgs.length;
 
-      // age & last activity
       const createdAt = ticket.createdAt ? new Date(ticket.createdAt) : null;
       const lastAt = ticket.lastMessageAt
         ? new Date(ticket.lastMessageAt)
         : null;
       const now = new Date();
-      const ageMs = createdAt ? now - createdAt : 0;
-      const lastMs = lastAt ? now - lastAt : 0;
-
       const toHuman = (ms) => {
-        if (!ms) return "—";
+        if (!ms && ms !== 0) return "—";
         const m = Math.round(ms / 60000);
         if (m < 60) return `${m} min`;
         const h = Math.floor(m / 60);
         const rem = m % 60;
         return `${h}h ${rem}m`;
       };
-      const ageHuman = toHuman(ageMs);
-      const lastAtHuman = toHuman(lastMs);
+      const ageHuman = createdAt ? toHuman(now - createdAt) : "—";
+      const lastAtHuman = lastAt ? toHuman(now - lastAt) : "—";
 
-      // simple “urgency” heuristic
       const severityScore =
         ticket.severity === "critical"
           ? 3
@@ -418,9 +404,13 @@ export default function Support() {
           ? 2
           : 1;
       const lagScore =
-        lastMs > 30 * 60 * 1000 ? 2 : lastMs > 10 * 60 * 1000 ? 1 : 0;
+        lastAt && now - lastAt > 30 * 60 * 1000
+          ? 2
+          : lastAt && now - lastAt > 10 * 60 * 1000
+          ? 1
+          : 0;
       const volumeScore = msgCount > 8 ? 2 : msgCount > 4 ? 1 : 0;
-      const urgency = severityScore + lagScore + volumeScore; // 0-7 rough
+      const urgency = severityScore + lagScore + volumeScore;
 
       const signals = [];
       if (ticket.severity === "critical")
@@ -431,8 +421,6 @@ export default function Support() {
         signals.push("More customer messages than staff responses.");
       if ((ticket.lastMessageSnippet || "").toLowerCase().includes("refund"))
         signals.push("Customer mentioned refund — consider credit/escalation.");
-      if ((ticket.title || "").toLowerCase().includes("no signal"))
-        signals.push("Likely network outage — check NOC/known incidents.");
 
       const nextAction =
         urgency >= 5
@@ -464,21 +452,16 @@ export default function Support() {
     }
   };
 
-  /* ---------- Flag ticket (optimistic) ---------- */
+  // ---- Flag toggle (optional API)
   const flagTicket = async (ticket) => {
     const id = ticket._id;
     try {
-      // optimistic UI: update local list if your hook exposes a setter;
-      // otherwise just call the API.
       const res = await fetch(`/api/tickets/${id}/flag`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ flagged: !ticket.flagged }),
       });
-      if (!res.ok) {
-        console.warn("Flag route missing or failed");
-      }
-      // Your hook likely receives socket "ticket:meta" updates and will refresh the row
+      if (!res.ok) console.warn("Flag route missing or failed");
     } catch (e) {
       console.error(e);
     }
@@ -511,7 +494,7 @@ export default function Support() {
 
       {/* Body */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 md:px-8 py-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Sidebar: tickets */}
+        {/* Sidebar */}
         <section
           className="rounded-2xl border p-3 lg:p-4"
           style={{
@@ -521,54 +504,13 @@ export default function Support() {
           }}
         >
           {/* Filters */}
-          <div className="flex flex-wrap gap-2 items-center">
-            {statusTabs.map((tab) => (
-              <motion.button
-                key={tab.key}
-                onClick={() => setFilters((f) => ({ ...f, status: tab.key }))}
-                whileTap={{ scale: 0.96 }}
-                className="text-xs px-2.5 py-1 rounded-full border transition"
-                style={{
-                  background:
-                    filters.status === tab.key
-                      ? "rgba(226,0,116,0.12)"
-                      : "rgba(255,255,255,0.85)",
-                  color: filters.status === tab.key ? T.magenta : T.ink,
-                  borderColor: T.stroke,
-                }}
-              >
-                {tab.label}
-              </motion.button>
-            ))}
-            <select
-              value={filters.severity}
-              onChange={(e) =>
-                setFilters((f) => ({ ...f, severity: e.target.value }))
-              }
-              className="ml-auto text-xs border rounded-xl h-8 px-2 bg-white/80"
-              style={{ borderColor: T.stroke }}
-              title="Filter by severity"
-            >
-              <option value="all">All severities</option>
-              <option value="minor">minor</option>
-              <option value="major">major</option>
-              <option value="critical">critical</option>
-            </select>
-          </div>
-
-          {/* Search */}
-          <div
-            className="mt-3 flex items-center gap-2 border rounded-xl px-2 h-10 bg-white/85"
-            style={{ borderColor: T.stroke }}
-          >
-            <Search className="h-4 w-4 text-slate-500" />
-            <input
-              value={filters.q}
-              onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
-              placeholder="Search title, city, snippet…"
-              className="flex-1 bg-transparent outline-none text-sm"
-            />
-          </div>
+          <TicketFilters
+            tickets={tickets}
+            openCount={openCount}
+            fixedCount={fixedCount}
+            filters={filters}
+            setFilters={setFilters}
+          />
 
           {/* List */}
           <div className="mt-3 max-h-[calc(100dvh-280px)] overflow-y-auto pr-1">
@@ -578,7 +520,6 @@ export default function Support() {
             {error && (
               <div className="text-sm text-rose-600">Error: {error}</div>
             )}
-
             {!loading && filtered.length === 0 && (
               <div className="text-sm text-slate-600">
                 No tickets match your filters.
@@ -607,7 +548,7 @@ export default function Support() {
           </div>
         </section>
 
-        {/* Main: conversation */}
+        {/* Conversation */}
         <section
           className="lg:col-span-2 rounded-2xl border p-3 sm:p-4 flex flex-col"
           style={{
@@ -616,7 +557,7 @@ export default function Support() {
             boxShadow: "0 8px 26px rgba(226,0,116,0.15)",
           }}
         >
-          {/* Ticket header */}
+          {/* Header */}
           <div
             className="flex items-center justify-between gap-3 pb-2 border-b"
             style={{ borderColor: T.stroke }}
@@ -699,63 +640,12 @@ export default function Support() {
           </div>
 
           {/* Composer */}
-          <div className="pt-2 border-t" style={{ borderColor: T.stroke }}>
-            <div
-              className="flex items-end gap-2 rounded-2xl border p-2 sm:p-3 bg:white/85"
-              style={{
-                borderColor: T.stroke,
-                background: "rgba(255,255,255,0.85)",
-              }}
-            >
-              <textarea
-                rows={1}
-                disabled={!selectedId}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    onSend();
-                  }
-                }}
-                placeholder={
-                  selectedId
-                    ? "Type a reply… (Enter to send, Shift+Enter for newline)"
-                    : "Select a ticket first"
-                }
-                className="flex-1 resize-none bg-transparent outline-none text-sm sm:text-base max-h-40 leading-6"
-              />
-              <motion.button
-                whileTap={{ scale: 0.97 }}
-                disabled={!selectedId || !input.trim()}
-                onClick={onSend}
-                className="inline-flex items-center gap-2 rounded-xl text-white px-4 py-2 font-medium transition disabled:opacity-50"
-                style={{
-                  background: T.magenta,
-                  boxShadow: "0 8px 22px rgba(226,0,116,0.35)",
-                }}
-                title="Send"
-              >
-                <Send className="h-4 w-4" />
-                <span className="hidden sm:inline">Send</span>
-              </motion.button>
-            </div>
-            <div className="mt-2 text-[11px] sm:text-xs text-slate-500">
-              Press{" "}
-              <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
-                Enter
-              </kbd>{" "}
-              to send,{" "}
-              <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
-                Shift
-              </kbd>
-              +
-              <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
-                Enter
-              </kbd>{" "}
-              for new line.
-            </div>
-          </div>
+          <Composer
+            disabled={!selectedId}
+            input={input}
+            setInput={setInput}
+            onSend={onSend}
+          />
         </section>
       </main>
 
@@ -768,5 +658,135 @@ export default function Support() {
         />
       </AnimatePresence>
     </div>
+  );
+}
+
+/* ---------- subcomponents ---------- */
+function TicketFilters({
+  tickets,
+  openCount,
+  fixedCount,
+  filters,
+  setFilters,
+}) {
+  const tabs = [
+    { key: "all", label: `All (${tickets.length})` },
+    { key: "open", label: `Open (${openCount})` },
+    { key: "fixed", label: `Fixed (${fixedCount})` },
+  ];
+  return (
+    <>
+      <div className="flex flex-wrap gap-2 items-center">
+        {tabs.map((tab) => (
+          <motion.button
+            key={tab.key}
+            onClick={() => setFilters((f) => ({ ...f, status: tab.key }))}
+            whileTap={{ scale: 0.96 }}
+            className="text-xs px-2.5 py-1 rounded-full border transition"
+            style={{
+              background:
+                filters.status === tab.key
+                  ? "rgba(226,0,116,0.12)"
+                  : "rgba(255,255,255,0.85)",
+              color: filters.status === tab.key ? T.magenta : T.ink,
+              borderColor: T.stroke,
+            }}
+          >
+            {tab.label}
+          </motion.button>
+        ))}
+        <select
+          value={filters.severity}
+          onChange={(e) =>
+            setFilters((f) => ({ ...f, severity: e.target.value }))
+          }
+          className="ml-auto text-xs border rounded-xl h-8 px-2 bg-white/80"
+          style={{ borderColor: T.stroke }}
+          title="Filter by severity"
+        >
+          <option value="all">All severities</option>
+          <option value="minor">minor</option>
+          <option value="major">major</option>
+          <option value="critical">critical</option>
+        </select>
+      </div>
+
+      <div
+        className="mt-3 flex items-center gap-2 border rounded-xl px-2 h-10 bg-white/85"
+        style={{ borderColor: T.stroke }}
+      >
+        <Search className="h-4 w-4 text-slate-500" />
+        <input
+          value={filters.q}
+          onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
+          placeholder="Search title, city, snippet…"
+          className="flex-1 bg-transparent outline-none text-sm"
+        />
+      </div>
+    </>
+  );
+}
+
+function Composer({ disabled, input, setInput, onSend }) {
+  return (
+    <>
+      <div className="pt-2 border-t" style={{ borderColor: T.stroke }}>
+        <div
+          className="flex items-end gap-2 rounded-2xl border p-2 sm:p-3 bg:white/85"
+          style={{
+            borderColor: T.stroke,
+            background: "rgba(255,255,255,0.85)",
+          }}
+        >
+          <textarea
+            rows={1}
+            disabled={disabled}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSend();
+              }
+            }}
+            placeholder={
+              !disabled
+                ? "Type a reply… (Enter to send, Shift+Enter for newline)"
+                : "Select a ticket first"
+            }
+            className="flex-1 resize-none bg-transparent outline-none text-sm sm:text-base max-h-40 leading-6"
+          />
+          <motion.button
+            whileTap={{ scale: 0.97 }}
+            disabled={disabled || !input.trim()}
+            onClick={onSend}
+            className="inline-flex items-center gap-2 rounded-xl text-white px-4 py-2 font-medium transition disabled:opacity-50"
+            style={{
+              background: T.magenta,
+              boxShadow: "0 8px 22px rgba(226,0,116,0.35)",
+            }}
+            title="Send"
+          >
+            <Send className="h-4 w-4" />
+            <span className="hidden sm:inline">Send</span>
+          </motion.button>
+        </div>
+        <div className="mt-2 text-[11px] sm:text-xs text-slate-500">
+          Press{" "}
+          <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
+            Enter
+          </kbd>{" "}
+          to send,{" "}
+          <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
+            Shift
+          </kbd>
+          +
+          <kbd className="px-1.5 py-0.5 rounded border border-slate-300 bg-white">
+            Enter
+          </kbd>{" "}
+          for new line.
+        </div>
+      </div>
+    </>
   );
 }
