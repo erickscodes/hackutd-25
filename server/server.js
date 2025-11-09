@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import dotenv from "dotenv";
 import http from "http";
@@ -6,13 +7,21 @@ import mongoose from "mongoose";
 import { connectDB } from "./db/connectToDB.js";
 import Ticket from "./models/Ticket.js";
 import ChatMessage from "./models/ChatMessage.js";
+import metricsRouter from "./metrics.js";
 
 dotenv.config();
-// console.log("OPEN_API_KEY:", process.env.OPEN_API_KEY);
 
 const app = express();
+
+// ---- Put logger FIRST so all requests are visible
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 app.use(express.json());
 app.use(express.static("public")); // serves /public/*.html
+app.use("/api", metricsRouter);
 
 // --- HTTP + WebSocket setup ---
 const server = http.createServer(app);
@@ -105,7 +114,7 @@ app.post("/api/test-ticket", async (req, res) => {
   }
 });
 
-// --- REST: create real ticket (used by chat.html “Start Chat”) ---
+// --- REST: create real ticket (used by chat “Start Chat”) ---
 app.post("/api/tickets", async (req, res) => {
   try {
     const {
@@ -126,7 +135,7 @@ app.post("/api/tickets", async (req, res) => {
       messageCount: 0,
     });
 
-    // ✨ Persist a bot welcome message so it shows for both user & staff
+    // Persist a bot welcome message so it shows for both user & staff
     const welcomeText =
       "🤖 Chatbot will triage your issue and a specialist will join shortly.";
     const botMsg = await ChatMessage.create({
@@ -142,7 +151,7 @@ app.post("/api/tickets", async (req, res) => {
     ticket.messageCount = (ticket.messageCount || 0) + 1;
     await ticket.save();
 
-    // Broadcast bot message (user might not have joined yet; they'll get it via history)
+    // Broadcast bot message (normalize)
     const payload = {
       _id: botMsg._id,
       ticketId: String(botMsg.ticketId),
@@ -174,10 +183,10 @@ app.post("/api/tickets", async (req, res) => {
   }
 });
 
-// --- REST: append chat message (stores + broadcasts to room and staff) ---
+// --- REST: append chat message ---
 app.post("/api/tickets/:id/chat", async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id || "").trim();
     const {
       authorType = "user",
       authorName = "Guest",
@@ -240,6 +249,82 @@ app.post("/api/tickets/:id/chat", async (req, res) => {
   }
 });
 
+// --- REST: ticket message history (NEW) ---
+app.get("/api/tickets/:id/messages", async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid ticket id" });
+    }
+    const msgs = await ChatMessage.find({
+      ticketId: new mongoose.Types.ObjectId(id),
+    }).sort({ createdAt: 1 });
+
+    const normalized = msgs.map((m) => ({
+      _id: String(m._id),
+      ticketId: String(m.ticketId),
+      authorType: m.authorType,
+      authorName: m.authorName,
+      text: m.text,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+    }));
+    res.json(normalized);
+  } catch (err) {
+    console.error("History error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- REST: close ticket (hardened) ---
+app.patch("/api/tickets/:id/close", async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    console.log("Close attempt:", { id, len: id.length });
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res
+        .status(404)
+        .json({ success: false, message: "not found", reason: "bad_id" });
+    }
+
+    const ticket = await Ticket.findById(id);
+    if (!ticket) {
+      return res
+        .status(404)
+        .json({ success: false, message: "not found", reason: "missing" });
+    }
+
+    if (ticket.status === "fixed") {
+      io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
+      await computeAndEmitStats();
+      return res
+        .status(409)
+        .json({ success: true, already: true, _id: ticket._id });
+    }
+
+    ticket.status = "fixed";
+    ticket.closedAt = new Date();
+    await ticket.save();
+
+    io.emit("ticket:closed", { _id: ticket._id, title: ticket.title });
+    io.emit("ticket:meta", {
+      id: String(ticket._id),
+      messageCount: ticket.messageCount,
+      lastMessageSnippet: ticket.lastMessageSnippet,
+      lastMessageAt: ticket.lastMessageAt,
+    });
+    await computeAndEmitStats();
+
+    return res.json({ success: true, _id: ticket._id });
+  } catch (err) {
+    console.error("Close ticket error:", err);
+    return res.status(500).json({ success: false, message: "server_error" });
+  }
+});
+
 // --- REST: list tickets ---
 app.get("/api/tickets", async (_req, res) => {
   try {
@@ -250,7 +335,7 @@ app.get("/api/tickets", async (_req, res) => {
   }
 });
 
-app.get("/", (req, res) => {
+app.get("/", (_req, res) => {
   res.send("Server is running ✅");
 });
 
@@ -280,11 +365,16 @@ io.on("connection", async (socket) => {
 });
 
 // --- Start server ---
-// Connect DB first to avoid race conditions, then listen
 const PORT = process.env.PORT || 4000;
 try {
   await connectDB();
-  console.log("✅ Mongo connected");
+  mongoose.connection.on("connected", () => {
+    console.log(
+      "✅ Mongo connected:",
+      mongoose.connection.host,
+      mongoose.connection.name
+    );
+  });
   server.listen(PORT, () => {
     console.log(`🚀 Running on PORT ${PORT}`);
     setInterval(async () => {
