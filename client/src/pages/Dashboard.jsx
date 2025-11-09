@@ -544,7 +544,7 @@ export default function DashboardDemo() {
                 color: "transparent",
               }}
             >
-              T-Mobile AI Dashboard
+              PulseScore Dashboard
             </h1>
             <p className="text-slate-700/80 text-sm md:text-base">
               Real-time sentiment, network health & operations.
